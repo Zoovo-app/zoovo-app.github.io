@@ -1,0 +1,224 @@
+<!doctype html><html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Bug reports — Zoovo</title><style>
+:root{--navy:#0D3B66;--coral:#F95738;--ink:#1c2b3a;--muted:#5b6b7b;--line:#dfe6ee;--green:#2e9b55;--amber:#c98a00}
+*{box-sizing:border-box}
+body{margin:0;background:#fafbfc;color:var(--ink);font:16px/1.6 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif}
+.wrap{max-width:900px;margin:0 auto;padding:32px 20px 80px}
+header{background:linear-gradient(180deg,#0D213B,#0D3B65);color:#fff;padding:20px}
+header .wrap{padding:0;display:flex;align-items:center;justify-content:space-between;gap:12px}
+header a{color:#fff;text-decoration:none;font-weight:700;letter-spacing:2px}
+header button{background:transparent;color:#fff;border:1px solid rgba(255,255,255,.4);border-radius:999px;padding:6px 14px;font:inherit;font-size:14px;cursor:pointer}
+h1{color:var(--navy);font-size:28px;margin:8px 0 4px}
+a{color:var(--coral)}
+.muted{color:var(--muted);font-size:13px}
+label{display:block;font-weight:600;color:var(--navy);margin:14px 0 6px}
+input{width:100%;font:inherit;color:inherit;background:#fff;border:1px solid var(--line);border-radius:12px;padding:12px 14px}
+.btn{margin-top:18px;font:inherit;font-weight:700;color:#fff;background:var(--coral);border:0;border-radius:999px;padding:12px 22px;cursor:pointer}
+.btn:disabled{opacity:.6;cursor:default}
+.card{background:#fff;border:1px solid var(--line);border-radius:16px;padding:18px 20px;margin-top:14px}
+.signin{max-width:420px}
+.error{color:#c62828}
+.toolbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:18px 0 4px}
+.chip{font:inherit;font-size:14px;border:1px solid var(--line);background:#fff;color:var(--navy);border-radius:999px;padding:6px 14px;cursor:pointer}
+.chip[aria-pressed=true]{background:var(--navy);border-color:var(--navy);color:#fff}
+.chip .n{opacity:.7;margin-left:4px}
+.spacer{flex:1}
+.report{display:grid;gap:8px}
+.report .top{display:flex;flex-wrap:wrap;gap:8px 12px;align-items:center}
+.report time{color:var(--muted);font-size:14px}
+.report select{font:inherit;font-size:14px;border:1px solid var(--line);border-radius:999px;padding:4px 10px;background:#fff;color:var(--navy);margin-left:auto}
+.report .desc{white-space:pre-wrap;overflow-wrap:anywhere;font-size:17px}
+.report .steps{white-space:pre-wrap;overflow-wrap:anywhere;color:var(--ink);background:#f5f8fb;border-radius:10px;padding:10px 12px;font-size:15px}
+.tags{display:flex;flex-wrap:wrap;gap:6px}
+.tag{font-size:13px;background:#eef3f8;color:var(--navy);border-radius:999px;padding:2px 10px;overflow-wrap:anywhere}
+.dot{width:10px;height:10px;border-radius:50%;flex:none}
+.s-new{background:var(--coral)}.s-in_progress{background:var(--amber)}.s-done{background:var(--green)}.s-wont_fix{background:#9aa7b4}
+code{font-size:13px;background:#eef3f8;border-radius:6px;padding:2px 6px;overflow-wrap:anywhere}
+pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#eef3f8;border-radius:10px;padding:12px;font-size:13px}
+</style></head>
+<body><header><div class="wrap"><a href="/">ZOOVO</a><button id="signout" hidden>Sign out</button></div></header>
+<main class="wrap">
+<h1>Bug reports</h1>
+<p class="muted">Filed from the in-app “Report a bug” button. Sign in with your Zoovo account.</p>
+
+<section id="signin" class="card signin" hidden>
+  <form id="signinForm">
+    <label for="email">Email</label>
+    <input id="email" type="email" autocomplete="username" required>
+    <label for="password">Password</label>
+    <input id="password" type="password" autocomplete="current-password" required>
+    <button class="btn" id="signinBtn" type="submit">Sign in</button>
+    <p id="signinMsg" class="error" role="alert"></p>
+  </form>
+</section>
+
+<section id="notAdmin" class="card" hidden>
+  <p><strong>This account can't see bug reports yet.</strong> In the Supabase SQL editor, run:</p>
+  <pre id="grantSql"></pre>
+  <p class="muted">Then reload this page.</p>
+</section>
+
+<section id="dash" hidden>
+  <div class="toolbar" id="filters"></div>
+  <p id="listMsg" class="muted" role="status"></p>
+  <div id="list"></div>
+</section>
+</main>
+<script type="module">
+import { supabaseClient } from '/assets/supabase.js';
+
+const sb = supabaseClient({ persistSession: true });
+const $ = (id) => document.getElementById(id);
+const STATUSES = [
+  ['new', 'New'], ['in_progress', 'In progress'], ['done', 'Done'], ['wont_fix', "Won't fix"],
+];
+let reports = [];
+let filter = 'new';
+
+function show(section) {
+  for (const id of ['signin', 'notAdmin', 'dash']) $(id).hidden = id !== section;
+  $('signout').hidden = section === 'signin';
+}
+
+async function route() {
+  const { data: { session } } = await sb.auth.getSession();
+  if (!session) return show('signin');
+  const { data: isAdmin, error } = await sb.rpc('is_app_admin');
+  if (error || !isAdmin) {
+    $('grantSql').textContent =
+      `insert into public.app_admins (user_id)\nvalues ('${session.user.id}');`;
+    return show('notAdmin');
+  }
+  show('dash');
+  await load();
+}
+
+async function load() {
+  $('listMsg').textContent = 'Loading…';
+  const { data, error } = await sb
+    .from('bug_reports')
+    .select('*')
+    .order('created_at', { ascending: false })
+    .limit(500);
+  if (error) {
+    $('listMsg').textContent = `Couldn't load reports: ${error.message}`;
+    return;
+  }
+  reports = data;
+  render();
+}
+
+function render() {
+  const counts = Object.fromEntries(STATUSES.map(([s]) => [s, 0]));
+  for (const r of reports) counts[r.status] = (counts[r.status] || 0) + 1;
+
+  const filters = $('filters');
+  filters.replaceChildren();
+  for (const [value, label] of [...STATUSES, ['all', 'All']]) {
+    const b = document.createElement('button');
+    b.className = 'chip';
+    b.setAttribute('aria-pressed', String(filter === value));
+    b.append(label);
+    const n = document.createElement('span');
+    n.className = 'n';
+    n.textContent = value === 'all' ? reports.length : counts[value];
+    b.append(n);
+    b.onclick = () => { filter = value; render(); };
+    filters.append(b);
+  }
+  const spacer = document.createElement('span');
+  spacer.className = 'spacer';
+  const refresh = document.createElement('button');
+  refresh.className = 'chip';
+  refresh.textContent = 'Refresh';
+  refresh.onclick = load;
+  filters.append(spacer, refresh);
+
+  const shown = filter === 'all' ? reports : reports.filter((r) => r.status === filter);
+  $('listMsg').textContent = shown.length ? '' : 'Nothing here.';
+  $('list').replaceChildren(...shown.map(card));
+}
+
+// Report fields are untrusted user input: build every node with
+// textContent, never innerHTML.
+function card(r) {
+  const el = document.createElement('article');
+  el.className = 'card report';
+
+  const top = document.createElement('div');
+  top.className = 'top';
+  const dot = document.createElement('span');
+  dot.className = `dot s-${r.status}`;
+  const time = document.createElement('time');
+  const created = new Date(r.created_at);
+  time.dateTime = r.created_at;
+  time.textContent = created.toLocaleString();
+  const select = document.createElement('select');
+  select.setAttribute('aria-label', 'Status');
+  for (const [value, label] of STATUSES) select.add(new Option(label, value, false, value === r.status));
+  select.onchange = async () => {
+    select.disabled = true;
+    const { error } = await sb.from('bug_reports').update({ status: select.value }).eq('id', r.id);
+    select.disabled = false;
+    if (error) { alert(`Couldn't update: ${error.message}`); select.value = r.status; return; }
+    r.status = select.value;
+    render();
+  };
+  top.append(dot, time, select);
+
+  const desc = document.createElement('div');
+  desc.className = 'desc';
+  desc.textContent = r.description;
+  el.append(top, desc);
+
+  if (r.steps) {
+    const steps = document.createElement('div');
+    steps.className = 'steps';
+    steps.textContent = r.steps;
+    el.append(steps);
+  }
+
+  const tags = document.createElement('div');
+  tags.className = 'tags';
+  const tag = (text) => { const t = document.createElement('span'); t.className = 'tag'; t.textContent = text; tags.append(t); };
+  if (r.app_version) tag(`Zoovo ${r.app_version}${r.build ? ` (${r.build})` : ''}`);
+  if (r.platform) tag([r.platform, r.os_version].filter(Boolean).join(' '));
+  if (r.screen) tag(`screen: ${r.screen}`);
+  if (r.reported_user_id) tag(`user ${r.reported_user_id}`);
+  tag(`ref ${r.id.slice(0, 8)}`);
+  el.append(tags);
+
+  if (r.contact_email) {
+    const p = document.createElement('p');
+    p.className = 'muted';
+    p.style.margin = '0';
+    const a = document.createElement('a');
+    a.href = `mailto:${encodeURIComponent(r.contact_email).replace('%40', '@')}?subject=${encodeURIComponent('Your Zoovo bug report')}`;
+    a.textContent = r.contact_email;
+    p.append('Reply to ', a);
+    el.append(p);
+  }
+  return el;
+}
+
+$('signinForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  $('signinBtn').disabled = true;
+  $('signinMsg').textContent = '';
+  const { error } = await sb.auth.signInWithPassword({
+    email: $('email').value.trim(),
+    password: $('password').value,
+  });
+  $('signinBtn').disabled = false;
+  if (error) { $('signinMsg').textContent = error.message; return; }
+  $('password').value = '';
+  route();
+});
+
+$('signout').onclick = async () => { await sb.auth.signOut(); route(); };
+
+route();
+</script>
+</body></html>

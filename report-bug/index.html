@@ -1,0 +1,162 @@
+<!doctype html><html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Report a bug — Zoovo</title><style>
+:root{--navy:#0D3B66;--coral:#F95738;--ink:#1c2b3a;--muted:#5b6b7b;--line:#dfe6ee}
+*{box-sizing:border-box}
+body{margin:0;background:#fafbfc;color:var(--ink);font:16px/1.6 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif}
+.wrap{max-width:760px;margin:0 auto;padding:32px 20px 80px}
+header{background:linear-gradient(180deg,#0D213B,#0D3B65);color:#fff;padding:28px 20px}
+header .wrap{padding:0;max-width:760px}
+header a{color:#fff;text-decoration:none;font-weight:700;letter-spacing:2px}
+h1{color:var(--navy);font-size:28px;margin:8px 0 4px}
+a{color:var(--coral)}
+.muted{color:var(--muted);font-size:13px}
+footer{color:var(--muted);font-size:13px;margin-top:48px;border-top:1px solid #e8edf2;padding-top:16px}
+form{margin-top:20px}
+label{display:block;font-weight:600;color:var(--navy);margin:18px 0 6px}
+label .opt{font-weight:400;color:var(--muted);font-size:14px}
+textarea,input[type=email]{width:100%;font:inherit;color:inherit;background:#fff;border:1px solid var(--line);border-radius:12px;padding:12px 14px}
+textarea{resize:vertical;min-height:110px}
+textarea:focus,input:focus{outline:2px solid var(--navy);outline-offset:1px;border-color:transparent}
+.hp{position:absolute;left:-10000px;width:1px;height:1px;opacity:0}
+.ctx{margin-top:18px;background:#eef3f8;border-radius:12px;padding:12px 14px;font-size:14px;color:var(--muted)}
+.ctx strong{color:var(--navy)}
+button{margin-top:22px;width:100%;font:inherit;font-weight:700;color:#fff;background:var(--coral);border:0;border-radius:999px;padding:14px 20px;cursor:pointer}
+button:disabled{opacity:.6;cursor:default}
+#msg{min-height:1.6em;margin:12px 0 0}
+#msg.error{color:#c62828}
+.done{margin-top:24px;background:#fff;border:1px solid var(--line);border-radius:16px;padding:24px}
+.done h2{color:var(--navy);margin:0 0 6px;font-size:22px}
+</style></head>
+<body><header><div class="wrap"><a href="/">ZOOVO</a></div></header>
+<main class="wrap">
+<h1 data-t="title">Report a bug</h1>
+<p data-t="intro">Something not working in Zoovo? Tell us what happened and we'll look into it.</p>
+
+<form id="form" novalidate>
+  <label for="description"><span data-t="what">What happened?</span></label>
+  <textarea id="description" maxlength="5000" required data-tp="whatPh" placeholder="e.g. The app closes when I open a chat"></textarea>
+
+  <label for="steps"><span data-t="steps">How can we make it happen again?</span> <span class="opt" data-t="optional">(optional)</span></label>
+  <textarea id="steps" maxlength="5000" data-tp="stepsPh" placeholder="1. Open Messages&#10;2. Tap a conversation&#10;3. …"></textarea>
+
+  <label for="email"><span data-t="email">Your email</span> <span class="opt" data-t="emailOpt">(optional, if you'd like a reply)</span></label>
+  <input id="email" type="email" maxlength="320" autocomplete="email">
+
+  <input id="website" class="hp" tabindex="-1" autocomplete="off" aria-hidden="true">
+
+  <div id="context" class="ctx" hidden><span data-t="attach">We'll attach:</span> <strong id="contextText"></strong></div>
+
+  <button id="send" type="submit" data-t="send">Send report</button>
+  <p id="msg" role="status" aria-live="polite"></p>
+</form>
+
+<div id="done" class="done" hidden>
+  <h2 data-t="thanks">Thanks, we got it!</h2>
+  <p data-t="thanksBody">We read every report. If you left your email, we may get back to you.</p>
+  <p class="muted"><span data-t="ref">Reference:</span> <span id="ref"></span></p>
+</div>
+
+<footer>Zoovo B.V. (Netherlands) · <a href="mailto:info@zoovo.eu">info@zoovo.eu</a> · <a href="/privacy">Privacy</a> · <a href="/terms">Terms</a></footer>
+</main>
+<script type="module">
+import { supabaseClient } from '/assets/supabase.js';
+
+const NL = {
+  title: 'Bug melden',
+  intro: 'Werkt er iets niet in Zoovo? Vertel ons wat er gebeurde, dan kijken we ernaar.',
+  what: 'Wat gebeurde er?',
+  whatPh: 'bijv. De app sluit af als ik een chat open',
+  steps: 'Hoe kunnen we het opnieuw laten gebeuren?',
+  stepsPh: '1. Open Berichten\n2. Tik op een gesprek\n3. …',
+  optional: '(optioneel)',
+  email: 'Je e-mailadres',
+  emailOpt: '(optioneel, als je een reactie wilt)',
+  attach: 'We voegen toe:',
+  send: 'Melding versturen',
+  thanks: 'Bedankt, we hebben het ontvangen!',
+  thanksBody: 'We lezen elke melding. Als je je e-mailadres hebt achtergelaten, nemen we misschien contact op.',
+  ref: 'Referentie:',
+  tooShort: 'Beschrijf de bug in een paar woorden.',
+  badEmail: 'Dat e-mailadres lijkt niet te kloppen.',
+  sending: 'Versturen…',
+  failed: 'Versturen is niet gelukt. Probeer het opnieuw of mail ons op info@zoovo.eu.',
+};
+const EN = {
+  tooShort: 'Please describe the bug in a few words.',
+  badEmail: "That email address doesn't look right.",
+  sending: 'Sending…',
+  failed: "Couldn't send your report. Please try again or email us at info@zoovo.eu.",
+};
+const dutch = (navigator.language || '').toLowerCase().startsWith('nl');
+const t = (key) => (dutch && NL[key]) || EN[key] || '';
+if (dutch) {
+  document.documentElement.lang = 'nl';
+  document.title = NL.title + ' — Zoovo';
+  document.querySelectorAll('[data-t]').forEach((el) => { if (NL[el.dataset.t]) el.textContent = NL[el.dataset.t]; });
+  document.querySelectorAll('[data-tp]').forEach((el) => { if (NL[el.dataset.tp]) el.placeholder = NL[el.dataset.tp]; });
+}
+
+// Context the app appends to the URL (lib/core/utils/bug_report.dart).
+const q = new URLSearchParams(location.search);
+const ctx = {
+  app_version: q.get('app_version'), build: q.get('build'), platform: q.get('platform'),
+  os_version: q.get('os_version'), screen: q.get('screen'), user_id: q.get('user_id'),
+};
+const summary = [
+  ctx.app_version && `Zoovo ${ctx.app_version}${ctx.build ? ` (${ctx.build})` : ''}`,
+  // iOS reports "Version 26.3.1 (Build 23D8133)"; "iOS 26.3.1" is enough here.
+  ctx.platform && [ctx.platform, (ctx.os_version || '').replace(/^Version\s+/i, '').replace(/\s*\(.*\)$/, '')].filter(Boolean).join(' '),
+  ctx.screen && `screen: ${ctx.screen}`,
+].filter(Boolean).join(' · ');
+if (summary) {
+  document.getElementById('contextText').textContent = summary;
+  document.getElementById('context').hidden = false;
+}
+
+const form = document.getElementById('form');
+const send = document.getElementById('send');
+const msg = document.getElementById('msg');
+const showError = (text) => { msg.textContent = text; msg.className = 'error'; };
+
+form.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const description = document.getElementById('description').value.trim();
+  const steps = document.getElementById('steps').value.trim();
+  const email = document.getElementById('email').value.trim();
+  if (description.length < 5) return showError(t('tooShort'));
+  if (email && !document.getElementById('email').checkValidity()) return showError(t('badEmail'));
+
+  // Bots fill every field; people never see this one.
+  if (document.getElementById('website').value) return finish('—');
+
+  send.disabled = true;
+  msg.textContent = t('sending'); msg.className = '';
+  const { data, error } = await supabaseClient().rpc('submit_bug_report', {
+    p_description: description,
+    p_steps: steps || null,
+    p_contact_email: email || null,
+    p_app_version: ctx.app_version,
+    p_build: ctx.build,
+    p_platform: ctx.platform,
+    p_os_version: ctx.os_version,
+    p_screen: ctx.screen,
+    p_user_id: ctx.user_id,
+  });
+  send.disabled = false;
+  if (error) {
+    console.error(error);
+    return showError(t('failed'));
+  }
+  finish(String(data).slice(0, 8));
+});
+
+function finish(ref) {
+  document.getElementById('ref').textContent = ref;
+  form.hidden = true;
+  document.getElementById('done').hidden = false;
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+</script>
+</body></html>
