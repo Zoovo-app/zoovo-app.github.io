@@ -60,6 +60,14 @@ pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#eef3f8;border-radius
   <p class="muted">Then reload this page.</p>
 </section>
 
+<section id="setup" class="card" hidden>
+  <p><strong>The bug-report database isn't set up yet.</strong> In the Supabase SQL editor, run <code>supabase/migrations/084_bug_reports.sql</code> from the Zoovo-app/zoovo-app repo, then reload this page.</p>
+</section>
+
+<section id="loadError" class="card" hidden>
+  <p class="error" id="loadErrorText"></p>
+</section>
+
 <section id="dash" hidden>
   <div class="toolbar" id="filters"></div>
   <p id="listMsg" class="muted" role="status"></p>
@@ -78,7 +86,7 @@ let reports = [];
 let filter = 'new';
 
 function show(section) {
-  for (const id of ['signin', 'notAdmin', 'dash']) $(id).hidden = id !== section;
+  for (const id of ['signin', 'notAdmin', 'setup', 'loadError', 'dash']) $(id).hidden = id !== section;
   $('signout').hidden = section === 'signin';
 }
 
@@ -86,7 +94,13 @@ async function route() {
   const { data: { session } } = await sb.auth.getSession();
   if (!session) return show('signin');
   const { data: isAdmin, error } = await sb.rpc('is_app_admin');
-  if (error || !isAdmin) {
+  // PGRST202: the API can't find the function, i.e. migration 084 isn't live.
+  if (error?.code === 'PGRST202') return show('setup');
+  if (error) {
+    $('loadErrorText').textContent = `Couldn't check access: ${error.message}`;
+    return show('loadError');
+  }
+  if (!isAdmin) {
     $('grantSql').textContent =
       `insert into public.app_admins (user_id)\nvalues ('${session.user.id}');`;
     return show('notAdmin');
