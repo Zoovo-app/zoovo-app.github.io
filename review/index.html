@@ -80,9 +80,12 @@ dt{color:var(--muted)}dd{margin:0;overflow-wrap:anywhere}
 import { supabaseClient } from '/assets/supabase.js';
 
 // Applicants choose their avatar URL (the database only checks for https), so
-// only images from our own public pro-media bucket are loaded here; anything
-// else would reveal the reviewer's IP and browser to a host the applicant runs.
-const PRO_MEDIA_PREFIX = 'https://bzoaterrltmuqedpikjv.supabase.co/storage/v1/object/public/pro-media/';
+// only images from our own public buckets are loaded here; anything else would
+// reveal the reviewer's IP and browser to a host the applicant runs. The app
+// saves pro-media photos; avatars covers applications sent before it copied
+// the personal photo there.
+const STORAGE_PUBLIC = 'https://bzoaterrltmuqedpikjv.supabase.co/storage/v1/object/public/';
+const AVATAR_PREFIXES = [`${STORAGE_PUBLIC}pro-media/`, `${STORAGE_PUBLIC}avatars/`];
 
 const sb = supabaseClient({ persistSession: true });
 const $ = (id) => document.getElementById(id);
@@ -181,10 +184,10 @@ function renderList() {
 }
 
 // The URL is normalised first, so "../" tricks can't leave the bucket.
-function proMediaUrl(value) {
+function ownAvatarUrl(value) {
   try {
     const href = new URL(value).href;
-    return href.startsWith(PRO_MEDIA_PREFIX) ? href : null;
+    return AVATAR_PREFIXES.some((prefix) => href.startsWith(prefix)) ? href : null;
   } catch {
     return null;
   }
@@ -192,7 +195,7 @@ function proMediaUrl(value) {
 
 function card(a) {
   const photo = el('img', { alt: '', referrerPolicy: 'no-referrer' });
-  const avatar = proMediaUrl(a.avatar_url ?? '');
+  const avatar = ownAvatarUrl(a.avatar_url ?? '');
   if (avatar) photo.src = avatar;
 
   const person = [a.first_name, a.last_name].filter(Boolean).join(' ');
@@ -245,12 +248,15 @@ function actions(a) {
   const box = el('div', { className: 'actions' });
   if (a.status === 'pending') {
     const approve = el('button', { className: 'btn', textContent: 'Approve' });
-    approve.onclick = () => act('admin_review_pro_application', { p_pro_id: a.id, p_approve: true }, approve);
+    approve.onclick = () => {
+      if (!confirm(`Approve ${a.display_name}? They get the Verified badge and an email right away.`)) return;
+      act('admin_review_pro_application', { p_pro_id: a.id, p_approve: true }, approve);
+    };
 
     const preset = el('select', {}, el('option', { value: '', textContent: 'Reason for rejecting…' }),
       ...REASONS.map((r) => el('option', { value: r, textContent: r })));
     preset.setAttribute('aria-label', `Reason for rejecting ${a.display_name}`);
-    const note = el('textarea', { rows: 2, placeholder: 'Note for the applicant (sent by email)' });
+    const note = el('textarea', { rows: 2, maxLength: 1000, placeholder: 'Note for the applicant (sent by email)' });
     note.setAttribute('aria-label', `Note for ${a.display_name} (sent by email)`);
     const reject = el('button', { className: 'btn secondary', textContent: 'Reject' });
     reject.onclick = () => {
@@ -282,10 +288,9 @@ async function act(fn, args, button) {
   const controls = [...button.closest('article').querySelectorAll('button, select, textarea')];
   for (const c of controls) c.disabled = true;
   const { error } = await sb.rpc(fn, args);
-  if (error) {
-    for (const c of controls) c.disabled = false;
-    return alert(`Couldn't save: ${error.message}`);
-  }
+  // Reload either way: after an error the card may be stale (e.g. another
+  // reviewer already decided), so it must not stay live.
+  if (error) alert(`Couldn't save: ${error.message}`);
   await load();
 }
 
@@ -321,6 +326,7 @@ $('signinForm').addEventListener('submit', async (e) => {
 
 $('signout').onclick = async () => {
   await sb.auth.signOut();
+  loadSeq++; // a load() still in flight must not render into the cleared list
   rows = [];
   $('list').replaceChildren(); // no applicant data stays in the page
   route();
