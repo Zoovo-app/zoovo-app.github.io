@@ -1,6 +1,7 @@
 <!doctype html><html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="robots" content="noindex">
+<meta http-equiv="Content-Security-Policy" content="img-src 'self' https://bzoaterrltmuqedpikjv.supabase.co data:">
 <title>Pro reviews — Zoovo</title><style>
 :root{--navy:#0D3B66;--coral:#F95738;--ink:#1c2b3a;--muted:#5b6b7b;--line:#dfe6ee;--green:#2e9b55;--amber:#c98a00}
 *{box-sizing:border-box}
@@ -77,6 +78,11 @@ dt{color:var(--muted)}dd{margin:0;overflow-wrap:anywhere}
 </main>
 <script type="module">
 import { supabaseClient } from '/assets/supabase.js';
+
+// Applicants choose their avatar URL (the database only checks for https), so
+// only images from our own public pro-media bucket are loaded here; anything
+// else would reveal the reviewer's IP and browser to a host the applicant runs.
+const PRO_MEDIA_PREFIX = 'https://bzoaterrltmuqedpikjv.supabase.co/storage/v1/object/public/pro-media/';
 
 const sb = supabaseClient({ persistSession: true });
 const $ = (id) => document.getElementById(id);
@@ -174,9 +180,20 @@ function renderList() {
   $('list').replaceChildren(...rows.map(card));
 }
 
+// The URL is normalised first, so "../" tricks can't leave the bucket.
+function proMediaUrl(value) {
+  try {
+    const href = new URL(value).href;
+    return href.startsWith(PRO_MEDIA_PREFIX) ? href : null;
+  } catch {
+    return null;
+  }
+}
+
 function card(a) {
   const photo = el('img', { alt: '', referrerPolicy: 'no-referrer' });
-  if (/^https:\/\//.test(a.avatar_url ?? '')) photo.src = a.avatar_url;
+  const avatar = proMediaUrl(a.avatar_url ?? '');
+  if (avatar) photo.src = avatar;
 
   const person = [a.first_name, a.last_name].filter(Boolean).join(' ');
   const tags = el('div', { className: 'tags' },
@@ -232,7 +249,9 @@ function actions(a) {
 
     const preset = el('select', {}, el('option', { value: '', textContent: 'Reason for rejecting…' }),
       ...REASONS.map((r) => el('option', { value: r, textContent: r })));
+    preset.setAttribute('aria-label', `Reason for rejecting ${a.display_name}`);
     const note = el('textarea', { rows: 2, placeholder: 'Note for the applicant (sent by email)' });
+    note.setAttribute('aria-label', `Note for ${a.display_name} (sent by email)`);
     const reject = el('button', { className: 'btn secondary', textContent: 'Reject' });
     reject.onclick = () => {
       const reason = [preset.value, note.value.trim()].filter(Boolean).join(' ');
