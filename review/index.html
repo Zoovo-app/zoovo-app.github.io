@@ -65,6 +65,7 @@ ul.plain{margin:0;padding-left:18px;white-space:normal}
 .thumb a{display:block;width:100%;height:100%}
 .thumb img{display:block;width:100%;height:100%;object-fit:cover}
 .thumb.added{outline:3px solid var(--amber);outline-offset:-3px}
+.thumb>.tag{position:absolute;left:50%;bottom:6px;transform:translateX(-50%);font-size:10px;line-height:1.6;padding:0 6px;white-space:nowrap}
 .thumb.playing{width:min(100%,320px);height:auto;background:#000}
 .thumb video{display:block;width:100%;max-height:300px}
 .badge{position:absolute;left:0;top:0;background:rgba(13,59,102,.85);color:#fff;font-size:10px;line-height:1.5;padding:0 6px;border-bottom-right-radius:6px}
@@ -292,7 +293,7 @@ const SERVICE_REASONS = [
   'Photos are not your own work', 'Price or description is unclear',
   'Not an allowed service', 'Other',
 ];
-let tab = 'apps';
+let activeTab = 'apps';
 let filter = 'pending';
 let rows = [];
 let counts = {}; // tab -> number waiting; unset or null while unknown
@@ -342,7 +343,7 @@ async function load() {
   $('listMsg').textContent = 'Loading…';
   $('list').replaceChildren();
   loadCounts(seq);
-  if (tab === 'apps') await loadApplications(seq);
+  if (activeTab === 'apps') await loadApplications(seq);
   else await loadServices(seq);
 }
 
@@ -362,10 +363,10 @@ async function loadApplications(seq) {
 }
 
 async function loadServices(seq) {
-  const { data, error } = await sb.rpc('admin_list_service_queue', { p_queue: tab });
+  const { data, error } = await sb.rpc('admin_list_service_queue', { p_queue: activeTab });
   if (seq !== loadSeq) return;
   if (error) {
-    counts[tab] = null; // unknown, not the old number
+    counts[activeTab] = null; // unknown, not the old number
     renderTabs();
     // The applications work without 090 and 091, so only this tab says so.
     $('listMsg').textContent = error.code === 'PGRST202'
@@ -374,7 +375,7 @@ async function loadServices(seq) {
     return;
   }
   rows = data ?? [];
-  counts[tab] = rows.length;
+  counts[activeTab] = rows.length;
   renderTabs();
   renderList();
 }
@@ -383,11 +384,11 @@ async function loadServices(seq) {
 // started (or the reviewer signed out) in the meantime.
 async function loadCounts(seq) {
   const jobs = [];
-  if (tab !== 'apps' || filter !== 'pending') {
+  if (activeTab !== 'apps' || filter !== 'pending') {
     jobs.push(['apps', () => sb.rpc('admin_list_pro_applications', { p_status: 'pending' })]);
   }
   for (const key of ['new', 'edits', 'live']) {
-    if (tab !== key) jobs.push([key, () => sb.rpc('admin_list_service_queue', { p_queue: key })]);
+    if (activeTab !== key) jobs.push([key, () => sb.rpc('admin_list_service_queue', { p_queue: key })]);
   }
   await Promise.all(jobs.map(async ([key, request]) => {
     let count = null;
@@ -407,7 +408,7 @@ const tabButtons = {};
 function buildTabs() {
   for (const [key] of TABS) {
     const b = el('button', { className: 'chip' });
-    b.onclick = () => { tab = key; load(); };
+    b.onclick = () => { activeTab = key; load(); };
     tabButtons[key] = b;
   }
   const refresh = el('button', { className: 'chip', textContent: 'Refresh', onclick: load });
@@ -419,14 +420,14 @@ function renderTabs() {
     const n = counts[key];
     const b = tabButtons[key];
     b.textContent = typeof n === 'number' ? `${label} · ${n >= 200 ? '200+' : n}` : label;
-    b.setAttribute('aria-pressed', String(tab === key));
+    b.setAttribute('aria-pressed', String(activeTab === key));
   }
 }
 
 function renderFilters() {
   const filters = $('filters');
   filters.replaceChildren();
-  filters.hidden = tab !== 'apps'; // the status filters are the applications'
+  filters.hidden = activeTab !== 'apps'; // the status filters are the applications'
   for (const [value, label] of FILTERS) {
     const b = el('button', { className: 'chip', textContent: label });
     b.setAttribute('aria-pressed', String(filter === value));
@@ -438,9 +439,9 @@ function renderFilters() {
 function renderList() {
   // The RPCs return at most 200 rows.
   const capped = rows.length >= 200 ? ' (the list stops at 200)' : '';
-  const order = tab === 'live' ? 'latest change first' : 'oldest first';
+  const order = activeTab === 'live' ? 'latest change first' : 'oldest first';
   $('listMsg').textContent = rows.length ? `${rows.length} shown, ${order}${capped}` : 'Nothing here.';
-  $('list').replaceChildren(...(tab === 'apps' ? rows.map(card) : rows.map((r) => serviceCard(r, tab))));
+  $('list').replaceChildren(...(activeTab === 'apps' ? rows.map(card) : rows.map((r) => serviceCard(r, activeTab))));
 }
 
 // The URL is normalised first, so "../" tricks can't leave the bucket.
@@ -630,6 +631,19 @@ function requirementNodes(v, o) {
   })))];
 }
 
+// An image of a service (`url` is already allow-listed). If the file does not
+// load, say a path with nothing uploaded behind it, the image (and the link
+// around it) turns into a "File missing" tag, so the reviewer sees the gap.
+function mediaImg(props, url) {
+  const img = el('img', { referrerPolicy: 'no-referrer', ...props });
+  img.addEventListener('error', () => {
+    const shown = img.parentElement?.tagName === 'A' ? img.parentElement : img;
+    shown.replaceWith(el('span', { className: 'tag warn', textContent: 'File missing' }));
+  }, { once: true });
+  img.src = url;
+  return img;
+}
+
 // A photo opens full size in a new tab; a video shows its poster and a Play
 // button that swaps in the player (nothing is downloaded before that).
 function thumb(m, number, added) {
@@ -639,10 +653,10 @@ function thumb(m, number, added) {
   const badge = (text) => holder.append(el('span', { className: added ? 'badge added' : 'badge', textContent: text }));
   if (m.type === 'photo' && src) {
     holder.append(el('a', { href: src, target: '_blank', rel: 'noopener noreferrer' },
-      el('img', { referrerPolicy: 'no-referrer', loading: 'lazy', alt: `Photo ${number}`, src })));
+      mediaImg({ loading: 'lazy', alt: `Photo ${number}` }, src)));
     if (added) badge('New');
   } else if (m.type === 'video' && src) {
-    if (poster) holder.append(el('img', { referrerPolicy: 'no-referrer', loading: 'lazy', alt: `Video ${number}`, src: poster }));
+    if (poster) holder.append(mediaImg({ loading: 'lazy', alt: `Video ${number}` }, poster));
     const play = el('button', { type: 'button', className: 'play', textContent: 'Play' });
     play.setAttribute('aria-label', `Play video ${number}`);
     play.onclick = () => {
@@ -672,7 +686,7 @@ function coverNode(n) {
   for (const m of n.media) {
     const url = serviceMediaUrl(m.type === 'video' ? m.poster_path : m.path);
     if (url && (m.type === 'photo' || m.type === 'video')) {
-      return el('img', { className: 'cover', alt: '', referrerPolicy: 'no-referrer', src: url });
+      return mediaImg({ className: 'cover', alt: '' }, url);
     }
   }
   return el('span', { className: 'cover' });
@@ -824,7 +838,10 @@ function serviceActions(r, queue, title) {
     approve.onclick = () => {
       const question = edit
         ? `Approve this change to "${title}"? The new version replaces the live one right away and the professional gets an email.${s.status === 'live' ? '' : ` The service stays ${STATUS_LABELS[s.status] ?? s.status}.`}`
-        : `Approve "${title}"? It goes live right away and the professional gets an email.`;
+        : r.pro?.status === 'approved'
+          ? `Approve "${title}"? It goes live right away and the professional gets an email.`
+          // A service is public only once its professional is approved (spec §8.1).
+          : `Approve "${title}"? It goes live once the professional is approved. The professional gets an email.`;
       if (!confirm(question)) return;
       act('admin_review_service_version', { p_version_id: r.version.id, p_approve: true }, approve);
     };
@@ -922,7 +939,7 @@ $('signout').onclick = async () => {
   loadSeq++; // a load() still in flight must not render into the cleared list
   rows = [];
   counts = {};
-  tab = 'apps';
+  activeTab = 'apps';
   renderTabs();
   $('list').replaceChildren(); // no applicant or service data stays in the page
   route();
