@@ -268,6 +268,33 @@ function joinReason(preset, note) {
   if (parts.length < 2) return parts[0] ?? '';
   return `${/[.!?]$/.test(parts[0]) ? parts[0] : `${parts[0]}.`} ${parts[1]}`;
 }
+
+// How long the note may be next to a preset. The server cuts a reason at 1000
+// characters, and joinReason puts the preset, a full stop and a space in front
+// of the note; without a preset (or with "Other") the note stands alone.
+function noteLimit(preset) {
+  return preset && preset !== 'Other' ? Math.max(0, 1000 - (preset.length + 2)) : 1000;
+}
+
+const STATUS_LABELS = { live: 'live', paused: 'paused', removed: 'offline' };
+
+// The tag on an edit card, by the status of the service the edit is for.
+function editTagText(status) {
+  const label = STATUS_LABELS[status];
+  if (!label) return 'edit to a service';
+  return `edit to ${/^[aeiou]/.test(label) ? 'an' : 'a'} ${label} service`;
+}
+
+// admin_service_queue_counts as one whole number per queue; a queue the answer
+// lacks, or has anything else for, is null (unknown).
+function queueCounts(data) {
+  const out = {};
+  for (const key of ['new', 'edits', 'live']) {
+    const n = data?.[key];
+    out[key] = Number.isInteger(n) && n >= 0 ? n : null;
+  }
+  return out;
+}
 // </pure>
 
 const sb = supabaseClient({ persistSession: true });
@@ -297,6 +324,13 @@ let activeTab = 'apps';
 let filter = 'pending';
 let rows = [];
 let counts = {}; // tab -> number waiting; unset or null while unknown
+// Tabs whose number is the true count (from the last answer of
+// admin_service_queue_counts). The others come from a list, which stops at 200
+// rows, so 200 there means "200 or more".
+let exact = new Set();
+// Set once the API says admin_service_queue_counts doesn't exist (migration
+// 091 older than that function): the counts then come from the lists.
+let countsRpcMissing = false;
 
 function show(section) {
   for (const id of ['signin', 'notAdmin', 'setup', 'loadError', 'dash']) $(id).hidden = id !== section;
@@ -366,7 +400,7 @@ async function loadServices(seq) {
   const { data, error } = await sb.rpc('admin_list_service_queue', { p_queue: activeTab });
   if (seq !== loadSeq) return;
   if (error) {
-    counts[activeTab] = null; // unknown, not the old number
+    if (!exact.has(activeTab)) counts[activeTab] = null; // unknown, not the old number
     renderTabs();
     // The applications work without 090 and 091, so only this tab says so.
     $('listMsg').textContent = error.code === 'PGRST202'
@@ -375,25 +409,64 @@ async function loadServices(seq) {
     return;
   }
   rows = data ?? [];
-  counts[activeTab] = rows.length;
+  if (!exact.has(activeTab)) counts[activeTab] = rows.length;
   renderTabs();
   renderList();
 }
 
-// The counts on the other tabs. Each answer is dropped if a newer load() has
-// started (or the reviewer signed out) in the meantime.
+// The counts on the tabs. Each answer is dropped if a newer load() has started
+// (or the reviewer signed out) in the meantime.
 async function loadCounts(seq) {
-  const jobs = [];
-  if (activeTab !== 'apps' || filter !== 'pending') {
-    jobs.push(['apps', () => sb.rpc('admin_list_pro_applications', { p_status: 'pending' })]);
+  await Promise.all([loadApplicationCount(seq), loadServiceCounts(seq)]);
+}
+
+// The pending applications, unless the list on screen already says.
+async function loadApplicationCount(seq) {
+  if (activeTab === 'apps' && filter === 'pending') return;
+  let count = null;
+  try {
+    const { data, error } = await sb.rpc('admin_list_pro_applications', { p_status: 'pending' });
+    if (!error) count = (data ?? []).length;
+  } catch {
+    // no count for this tab
   }
-  for (const key of ['new', 'edits', 'live']) {
-    if (activeTab !== key) jobs.push([key, () => sb.rpc('admin_list_service_queue', { p_queue: key })]);
+  if (seq !== loadSeq) return;
+  counts.apps = count;
+  renderTabs();
+}
+
+// The three service queues in one call; the lists are the fallback.
+async function loadServiceCounts(seq) {
+  if (!countsRpcMissing) {
+    let answer = null;
+    let missing = false;
+    try {
+      const { data, error } = await sb.rpc('admin_service_queue_counts');
+      if (error?.code === 'PGRST202') missing = true;
+      else if (!error) answer = queueCounts(data);
+    } catch {
+      // no counts this time
+    }
+    if (seq !== loadSeq) return;
+    if (!missing) {
+      for (const key of ['new', 'edits', 'live']) {
+        if (answer && answer[key] !== null) {
+          counts[key] = answer[key];
+          exact.add(key);
+        } else {
+          exact.delete(key);
+          if (key !== activeTab) counts[key] = null; // unknown; the open tab keeps what its list said
+        }
+      }
+      renderTabs();
+      return;
+    }
+    countsRpcMissing = true;
   }
-  await Promise.all(jobs.map(async ([key, request]) => {
+  await Promise.all(['new', 'edits', 'live'].filter((key) => activeTab !== key).map(async (key) => {
     let count = null;
     try {
-      const { data, error } = await request();
+      const { data, error } = await sb.rpc('admin_list_service_queue', { p_queue: key });
       if (!error) count = (data ?? []).length;
     } catch {
       // no count for this tab
@@ -419,7 +492,7 @@ function renderTabs() {
   for (const [key, label] of TABS) {
     const n = counts[key];
     const b = tabButtons[key];
-    b.textContent = typeof n === 'number' ? `${label} · ${n >= 200 ? '200+' : n}` : label;
+    b.textContent = typeof n === 'number' ? `${label} · ${n >= 200 && !exact.has(key) ? '200+' : n}` : label;
     b.setAttribute('aria-pressed', String(activeTab === key));
   }
 }
@@ -550,7 +623,6 @@ function actions(a) {
 // URL, never innerHTML.
 // ---------------------------------------------------------------------------
 
-const STATUS_LABELS = { live: 'live', paused: 'paused', removed: 'offline' };
 const MODES = {
   customer_home: "at the pet parent's home", pro_home: "at the professional's place", both: 'at either place',
 };
@@ -686,7 +758,7 @@ function coverNode(n) {
   for (const m of n.media) {
     const url = serviceMediaUrl(m.type === 'video' ? m.poster_path : m.path);
     if (url && (m.type === 'photo' || m.type === 'video')) {
-      return mediaImg({ className: 'cover', alt: '' }, url);
+      return mediaImg({ className: 'cover', alt: '', loading: 'lazy' }, url);
     }
   }
   return el('span', { className: 'cover' });
@@ -807,7 +879,7 @@ function serviceCard(r, queue) {
   const tags = el('div', { className: 'tags' });
   const tag = (kind, label) => tags.append(el('span', { className: kind ? `tag ${kind}` : 'tag', textContent: label }));
   if (queue === 'new') tag('status', 'new service');
-  if (queue === 'edits') tag('status', 'edit to a live service');
+  if (queue === 'edits') tag('status', editTagText(s.status));
   if (queue === 'live') tag(s.status === 'live' ? 'status' : 'warn', STATUS_LABELS[s.status] ?? s.status);
   else if (s.status === 'paused' || s.status === 'removed') tag('warn', STATUS_LABELS[s.status]);
   if (queue === 'live' && r.version) tag('added', 'edit waiting for review');
@@ -848,7 +920,14 @@ function serviceActions(r, queue, title) {
 
     const preset = el('select', {}, el('option', { value: '', textContent: 'Choose a reason…' }),
       ...SERVICE_REASONS.map((x) => el('option', { value: x, textContent: x })));
-    const note = el('textarea', { rows: 3, maxLength: 1000 });
+    // The server cuts a reason at 1000 characters, preset and note together, so
+    // the note gets what the chosen preset leaves.
+    const note = el('textarea', { rows: 3, maxLength: noteLimit('') });
+    preset.onchange = () => {
+      const limit = noteLimit(preset.value);
+      note.maxLength = limit;
+      if (note.value.length > limit) note.value = note.value.slice(0, limit);
+    };
     const reject = el('button', { className: 'btn secondary', textContent: edit ? 'Reject the change' : 'Reject' });
     reject.onclick = () => {
       const reason = joinReason(preset.value, note.value);
@@ -867,6 +946,11 @@ function serviceActions(r, queue, title) {
           : 'The professional can fix it and send it again.',
       })),
     );
+  }
+
+  if ((queue === 'new' || queue === 'edits') && !r.version?.id) {
+    controls.append(el('div', { className: 'row' },
+      el('span', { className: 'tag warn', textContent: 'Can’t review: version id missing' })));
   }
 
   const dashed = controls.children.length > 0;
@@ -939,6 +1023,7 @@ $('signout').onclick = async () => {
   loadSeq++; // a load() still in flight must not render into the cleared list
   rows = [];
   counts = {};
+  exact = new Set();
   activeTab = 'apps';
   renderTabs();
   $('list').replaceChildren(); // no applicant or service data stays in the page
