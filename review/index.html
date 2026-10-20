@@ -72,6 +72,8 @@ ul.plain{margin:0;padding-left:18px;white-space:normal}
 .badge.added{background:var(--amber)}
 .play{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);background:rgba(13,59,102,.85);color:#fff;border:0;border-radius:999px;padding:4px 12px;font:inherit;font-size:12px;cursor:pointer;white-space:nowrap}
 .box .tags{margin:0}
+.removed{color:var(--muted);font-size:14px}
+.removed s{text-decoration:line-through}
 .row.center{align-items:center}
 .actions label{display:flex;flex-direction:column;gap:6px;margin:0;font-size:15px}
 .actions select,.actions textarea{font-weight:400}
@@ -285,6 +287,19 @@ function editTagText(status) {
   return `edit to ${/^[aeiou]/.test(label) ? 'an' : 'a'} ${label} service`;
 }
 
+// "Taken offline by Ann on 20 Oct 2026" from the service's reviewed_by (a
+// name) and reviewed_at. Whichever of the two is missing is left out; null when
+// both are.
+function offlineNote(name, at) {
+  const who = typeof name === 'string' ? name.trim() : '';
+  const date = typeof at === 'string' ? new Date(at) : null;
+  const when = date && !Number.isNaN(date.getTime())
+    ? date.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })
+    : '';
+  if (!who && !when) return null;
+  return `Taken offline${who ? ` by ${who}` : ''}${when ? ` on ${when}` : ''}`;
+}
+
 // admin_service_queue_counts as one whole number per queue; a queue the answer
 // lacks, or has anything else for, is null (unknown).
 function queueCounts(data) {
@@ -294,6 +309,46 @@ function queueCounts(data) {
     out[key] = Number.isInteger(n) && n >= 0 ? n : null;
   }
   return out;
+}
+
+const SIZES = [['small', 'Small'], ['medium', 'Medium'], ['large', 'Large']];
+
+// What an edit drops from the live version (both arguments come from
+// normaliseVersion). A price part counts as dropped when the edit no longer has
+// it at all, not when its value changed; the wording is the price row's.
+function removedPriceParts(live, version) {
+  const parts = (n) => {
+    const out = [];
+    if (n.custom_quote) out.push(['quote', 'Custom quote (price on request)']);
+    for (const [key, label] of SIZES) {
+      const cents = n.size_prices?.[key];
+      if (typeof cents === 'number') out.push([`size_${key}`, `${label} ${euros(cents)}`]);
+    }
+    if (n.base_price_cents !== null) {
+      out.push(['base', `${n.size_prices ? 'Base ' : ''}${euros(n.base_price_cents)}`]);
+    }
+    if (n.extra_pet_price_cents !== null) out.push(['extra_pet', `Extra pet +${euros(n.extra_pet_price_cents)}`]);
+    if (n.weekend_surcharge_pct !== null) out.push(['weekend', `Weekends +${n.weekend_surcharge_pct}%`]);
+    if (n.holiday_surcharge_pct !== null) out.push(['holiday', `Holidays +${n.holiday_surcharge_pct}%`]);
+    return out;
+  };
+  const kept = new Set(parts(version).map(([id]) => id));
+  return parts(live).filter(([id]) => !kept.has(id)).map(([, text]) => text);
+}
+
+// Included items the edit no longer lists.
+function removedItems(live, version) {
+  const kept = new Set(version.whats_included);
+  return live.whats_included.filter((item) => !kept.has(item));
+}
+
+// Files the edit no longer holds, named by their place in the LIVE NOW strip
+// ("Photo 3", "Video 4").
+function removedMedia(live, version) {
+  const kept = new Set(version.media.map((m) => m.path));
+  return live.media.flatMap((m, i) => (kept.has(m.path) ? [] : [
+    `${m.type === 'video' ? 'Video' : m.type === 'photo' ? 'Photo' : 'File'} ${i + 1}`,
+  ]));
 }
 // </pure>
 
@@ -627,7 +682,6 @@ const MODES = {
   customer_home: "at the pet parent's home", pro_home: "at the professional's place", both: 'at either place',
 };
 const UNITS = { fixed: 'Fixed price', hour: 'Per hour', day: 'Per day', night: 'Per night', visit: 'Per visit' };
-const SIZES = [['small', 'Small'], ['medium', 'Medium'], ['large', 'Large']];
 const REQUIREMENTS = {
   vaccinated_only: 'Vaccinated pets only', small_dogs_only: 'Small dogs only',
   large_dogs_accepted: 'Large dogs welcome', cats_accepted: 'Cats welcome',
@@ -664,6 +718,10 @@ function textNodes(value, other) {
 }
 const compareText = (read) => (v, o) => textNodes(read(v), o ? read(o) : undefined);
 
+// An item the edit dropped from the live version: shown on the SUBMITTED side,
+// struck through and muted.
+const removedLine = (text) => el('div', { className: 'removed' }, 'Removed: ', el('s', { textContent: text }));
+
 function priceNodes(v, o) {
   const same = (key) => !o || JSON.stringify(v[key]) === JSON.stringify(o[key]);
   const piece = (text, unchanged) => (unchanged ? text : el('mark', { textContent: text }));
@@ -682,17 +740,22 @@ function priceNodes(v, o) {
   if (v.weekend_surcharge_pct !== null) extras.push(piece(`Weekends +${v.weekend_surcharge_pct}%`, same('weekend_surcharge_pct')));
   if (v.holiday_surcharge_pct !== null) extras.push(piece(`Holidays +${v.holiday_surcharge_pct}%`, same('holiday_surcharge_pct')));
   const unit = v.price_unit ? piece(UNITS[v.price_unit] ?? v.price_unit, same('price_unit')) : null;
-  if (!prices.length && !extras.length && !unit) return [none('No price set')];
+  const removed = o ? removedPriceParts(o, v).map(removedLine) : [];
+  if (!prices.length && !extras.length && !unit) return [none('No price set'), ...removed];
   return [
     el('div', {}, ...(unit ? [unit, ': '] : []), ...(prices.length ? join(prices) : [none('No price set')])),
     extras.length ? el('div', {}, ...join(extras)) : null,
+    ...removed,
   ];
 }
 
 function listNodes(v, o) {
-  if (!v.whats_included.length) return [none('None')];
-  return [el('ul', { className: 'plain' }, ...v.whats_included.map((item) =>
-    el('li', {}, !o || o.whats_included.includes(item) ? item : el('mark', { textContent: item }))))];
+  const removed = o ? removedItems(o, v) : [];
+  if (!v.whats_included.length && !removed.length) return [none('None')];
+  return [el('ul', { className: 'plain' },
+    ...v.whats_included.map((item) =>
+      el('li', {}, !o || o.whats_included.includes(item) ? item : el('mark', { textContent: item }))),
+    ...removed.map((item) => el('li', { className: 'removed' }, 'Removed: ', el('s', { textContent: item }))))];
 }
 
 function requirementNodes(v, o) {
@@ -748,10 +811,14 @@ function thumb(m, number, added) {
 }
 
 function mediaNodes(v, o) {
-  if (!v.media.length) return [none('No photos or videos')];
+  const removed = o ? removedMedia(o, v) : [];
+  if (!v.media.length) return [none('No photos or videos'), ...(removed.length ? [removedLine(removed.join(', '))] : [])];
   const before = o ? new Set(o.media.map((m) => m.path)) : null;
-  return [el('div', { className: 'strip' },
-    ...v.media.map((m, i) => thumb(m, i + 1, before !== null && !before.has(m.path))))];
+  return [
+    el('div', { className: 'strip' },
+      ...v.media.map((m, i) => thumb(m, i + 1, before !== null && !before.has(m.path)))),
+    removed.length ? removedLine(removed.join(', ')) : null,
+  ];
 }
 
 function coverNode(n) {
@@ -795,21 +862,27 @@ const panel = (nodes, changed = false, column = '') => {
   return node;
 };
 
-// Settings of the service itself: not versioned, so never compared.
-function settingsBlocks(r) {
+// Settings of the service itself: not versioned, so never compared. In the Live
+// tab an offline service also says who took it offline and when.
+function settingsBlocks(r, queue) {
   const s = r.service ?? {};
   const hours = weeklyHoursLines(s.weekly_hours);
+  const by = queue === 'live' && s.status === 'removed' ? offlineNote(s.reviewed_by, s.reviewed_at) : null;
   return [
-    s.status === 'removed' && s.removed_reason ? block('Why it was taken offline', panel([s.removed_reason])) : null,
+    s.status === 'removed' && (s.removed_reason || by)
+      ? block('Why it was taken offline',
+        s.removed_reason ? panel([s.removed_reason]) : null,
+        by ? el('span', { className: 'muted', textContent: by }) : null)
+      : null,
     block('Weekly hours', panel(hours.length ? hours.map((line) => el('div', { textContent: line })) : [none('No opening hours set')])),
     block('Bookings per day', panel([typeof s.max_bookings_per_day === 'number' ? String(s.max_bookings_per_day) : none()])),
   ];
 }
 
-function singleView(r, n) {
+function singleView(r, n, queue) {
   return [
     ...ROWS.filter((row) => !row.compareOnly).map((row) => block(row.label, panel(row.render(n)))),
-    ...settingsBlocks(r),
+    ...settingsBlocks(r, queue),
   ];
 }
 
@@ -866,7 +939,7 @@ function editView(r) {
       el('span', { className: 'colhead', textContent: 'SUBMITTED' })) : null,
     ...changedRows,
     ...unchangedRows,
-    ...settingsBlocks(r),
+    ...settingsBlocks(r, 'edits'),
   ];
 }
 
@@ -896,7 +969,7 @@ function serviceCard(r, queue) {
     ));
   return el('article', { className: 'card svc' },
     head,
-    ...(queue === 'edits' ? editView(r) : singleView(r, n)),
+    ...(queue === 'edits' ? editView(r) : singleView(r, n, queue)),
     serviceActions(r, queue, title));
 }
 
