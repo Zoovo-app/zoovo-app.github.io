@@ -1,7 +1,7 @@
 <!doctype html><html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="robots" content="noindex">
-<meta http-equiv="Content-Security-Policy" content="img-src 'self' https://bzoaterrltmuqedpikjv.supabase.co data:">
+<meta http-equiv="Content-Security-Policy" content="img-src 'self' https://bzoaterrltmuqedpikjv.supabase.co data:; media-src https://bzoaterrltmuqedpikjv.supabase.co">
 <title>Pro reviews — Zoovo</title><style>
 :root{--navy:#0D3B66;--coral:#F95738;--ink:#1c2b3a;--muted:#5b6b7b;--line:#dfe6ee;--green:#2e9b55;--amber:#c98a00}
 *{box-sizing:border-box}
@@ -40,12 +40,48 @@ dt{color:var(--muted)}dd{margin:0;overflow-wrap:anywhere}
 .bio{white-space:pre-wrap;overflow-wrap:anywhere;background:#f5f8fb;border-radius:10px;padding:10px 12px}
 .actions{display:grid;gap:8px;margin-top:12px}
 .row{display:flex;flex-wrap:wrap;gap:8px}
-@media (max-width:600px){.app{grid-template-columns:1fr}dl{grid-template-columns:1fr}}
+[hidden]{display:none!important}
+.tag.warn{background:#fdecea;color:#b3261e}
+.tag.added{background:#fff6e0;color:#8a5d00;border:1px solid #f2d58a}
+.svc{display:flex;flex-direction:column;gap:14px}
+.svc-head{display:flex;flex-wrap:wrap;gap:14px;align-items:flex-start}
+.cover{display:block;width:72px;height:72px;border-radius:12px;object-fit:cover;background:#eef3f8;flex:none}
+.svc-title{flex:999 1 280px;min-width:0;display:flex;flex-direction:column;gap:4px}
+.svc-title .waiting,.svc-title .tags{margin:0}
+.summary{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:10px 12px;border-radius:10px;background:#f5f8fb;font-size:14px}
+.summary .text{flex:1 1 260px;min-width:0}
+.chip.small{padding:4px 12px}
+.cols{display:flex;flex-wrap:wrap;gap:8px 16px}
+.cols>*{flex:1 1 260px;min-width:0}
+.colhead{font-size:12px;font-weight:700;letter-spacing:1px;color:var(--muted)}
+.field{display:flex;flex-direction:column;gap:6px}
+.field-label{font-weight:600;color:var(--navy);font-size:15px}
+.box{padding:10px 12px;border-radius:10px;background:#f5f8fb;font-size:14px;white-space:pre-wrap;overflow-wrap:anywhere}
+.box.changed{background:#fff6e0;border:1px solid #f2d58a}
+mark{background:#ffe08a;color:inherit}
+ul.plain{margin:0;padding-left:18px;white-space:normal}
+.strip{display:flex;flex-wrap:wrap;gap:6px;white-space:normal}
+.thumb{position:relative;display:flex;align-items:center;justify-content:center;width:72px;height:72px;border-radius:8px;overflow:hidden;background:#e3e9f0;font-size:11px;color:var(--muted);text-align:center}
+.thumb a{display:block;width:100%;height:100%}
+.thumb img{display:block;width:100%;height:100%;object-fit:cover}
+.thumb.added{outline:3px solid var(--amber);outline-offset:-3px}
+.thumb.playing{width:min(100%,320px);height:auto;background:#000}
+.thumb video{display:block;width:100%;max-height:300px}
+.badge{position:absolute;left:0;top:0;background:rgba(13,59,102,.85);color:#fff;font-size:10px;line-height:1.5;padding:0 6px;border-bottom-right-radius:6px}
+.badge.added{background:var(--amber)}
+.play{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);background:rgba(13,59,102,.85);color:#fff;border:0;border-radius:999px;padding:4px 12px;font:inherit;font-size:12px;cursor:pointer;white-space:nowrap}
+.box .tags{margin:0}
+.row.center{align-items:center}
+.actions label{display:flex;flex-direction:column;gap:6px;margin:0;font-size:15px}
+.actions select,.actions textarea{font-weight:400}
+.sep{border-top:1px solid var(--line);padding-top:14px}
+.sep.dashed{border-top-style:dashed;margin-top:6px;padding-top:12px}
+@media (max-width:600px){.app{grid-template-columns:1fr}dl{grid-template-columns:1fr}.colheads{display:none}.box[data-col]::before{content:attr(data-col);display:block;margin-bottom:4px;font-size:11px;font-weight:700;letter-spacing:1px;color:var(--muted)}}
 </style></head>
 <body><header><div class="wrap"><a href="/">ZOOVO</a><button id="signout" hidden>Sign out</button></div></header>
 <main class="wrap">
-<h1>Professional applications</h1>
-<p class="muted">Approve or reject people who applied to become a Zoovo Professional. We promise applicants an answer within one business day. Sign in with your Zoovo account.</p>
+<h1>Reviews</h1>
+<p class="muted">Approve or reject professionals and their services. We promise an answer within one business day. Sign in with your Zoovo account.</p>
 
 <section id="signin" class="card signin" hidden>
   <form id="signinForm">
@@ -71,6 +107,7 @@ dt{color:var(--muted)}dd{margin:0;overflow-wrap:anywhere}
 <section id="loadError" class="card" hidden><p class="error" id="loadErrorText"></p></section>
 
 <section id="dash" hidden>
+  <div class="toolbar" id="tabs"></div>
   <div class="toolbar" id="filters"></div>
   <p id="listMsg" class="muted" role="status"></p>
   <div id="list"></div>
@@ -86,6 +123,151 @@ import { supabaseClient } from '/assets/supabase.js';
 // the personal photo there.
 const STORAGE_PUBLIC = 'https://bzoaterrltmuqedpikjv.supabase.co/storage/v1/object/public/';
 const AVATAR_PREFIXES = [`${STORAGE_PUBLIC}pro-media/`, `${STORAGE_PUBLIC}avatars/`];
+
+// <pure> Helpers that never touch the page, so they can be checked with node.
+// Service media follows the same rule as avatars: a URL is built only for a
+// path of exactly the shape the app uploads (<uid>/<service>/<version>/<file>);
+// anything else, "../" included, is not rendered.
+const MEDIA_PATH = /^[0-9a-f-]{36}\/[0-9a-f-]{36}\/[0-9a-f-]{36}\/(photo|video|poster)_[0-9]+_[0-9a-f]{8}\.(jpg|jpeg|png|webp|mp4|mov|m4v)$/;
+
+function serviceMediaUrl(path) {
+  return typeof path === 'string' && MEDIA_PATH.test(path)
+    ? `${STORAGE_PUBLIC}service-media/${path}`
+    : null;
+}
+
+// The fields of a service version the team compares, in display order.
+const COMPARED = [
+  'title', 'category', 'other_category_label', 'description', 'whats_included',
+  'experience_note', 'media', 'price_unit', 'base_price_cents', 'size_prices',
+  'extra_pet_price_cents', 'weekend_surcharge_pct', 'holiday_surcharge_pct',
+  'custom_quote', 'location_mode', 'service_radius_km', 'address_label',
+  'requirements', 'extra_requirements', 'cancellation_policy',
+];
+
+// Same value, same shape, same key order: missing, null and '' are all "not
+// set", and requirements (a set) are sorted, so JSON.stringify can compare.
+function normaliseVersion(v) {
+  const x = v && typeof v === 'object' ? v : {};
+  const text = (s) => (typeof s === 'string' && s !== '' ? s : null);
+  const num = (n) => (typeof n === 'number' && Number.isFinite(n) ? n : null);
+  const strings = (a) => (Array.isArray(a) ? a.filter((s) => typeof s === 'string') : []);
+  const sizes = x.size_prices && typeof x.size_prices === 'object'
+    ? { small: num(x.size_prices.small), medium: num(x.size_prices.medium), large: num(x.size_prices.large) }
+    : null;
+  return {
+    title: text(x.title),
+    category: text(x.category),
+    other_category_label: text(x.other_category_label),
+    description: text(x.description),
+    whats_included: strings(x.whats_included),
+    experience_note: text(x.experience_note),
+    media: (Array.isArray(x.media) ? x.media : [])
+      .filter((m) => m && typeof m === 'object')
+      .map((m) => ({ type: text(m.type), path: text(m.path), poster_path: text(m.poster_path) })),
+    price_unit: text(x.price_unit),
+    base_price_cents: num(x.base_price_cents),
+    size_prices: sizes && (sizes.small !== null || sizes.medium !== null || sizes.large !== null) ? sizes : null,
+    extra_pet_price_cents: num(x.extra_pet_price_cents),
+    weekend_surcharge_pct: num(x.weekend_surcharge_pct),
+    holiday_surcharge_pct: num(x.holiday_surcharge_pct),
+    custom_quote: x.custom_quote === true,
+    location_mode: text(x.location_mode),
+    service_radius_km: num(x.service_radius_km),
+    address_label: text(x.address_label),
+    requirements: strings(x.requirements).sort(),
+    extra_requirements: text(x.extra_requirements),
+    cancellation_policy: text(x.cancellation_policy),
+  };
+}
+
+// The compared fields that differ between two versions (live may be null).
+function changedFields(live, version) {
+  const a = normaliseVersion(live);
+  const b = normaliseVersion(version);
+  return COMPARED.filter((k) => JSON.stringify(a[k]) !== JSON.stringify(b[k]));
+}
+
+const FIELD_GROUP = {
+  title: 'title', category: 'category', other_category_label: 'category',
+  description: 'description', whats_included: "what's included", experience_note: 'experience note',
+  price_unit: 'price', base_price_cents: 'price', size_prices: 'price',
+  extra_pet_price_cents: 'price', weekend_surcharge_pct: 'price',
+  holiday_surcharge_pct: 'price', custom_quote: 'price',
+  location_mode: 'location', service_radius_km: 'location', address_label: 'location',
+  requirements: 'requirements', extra_requirements: 'requirements',
+  cancellation_policy: 'cancellation policy',
+};
+
+// "2 new photos", "1 video removed", … for the media of an edit.
+function mediaLabels(live, version) {
+  const a = normaliseVersion(live).media;
+  const b = normaliseVersion(version).media;
+  const had = new Set(a.map((m) => m.path));
+  const has = new Set(b.map((m) => m.path));
+  const added = b.filter((m) => !had.has(m.path));
+  const removed = a.filter((m) => !has.has(m.path));
+  const count = (list, video) => list.filter((m) => (m.type === 'video') === video).length;
+  const n = (k, noun) => `${k} ${noun}${k === 1 ? '' : 's'}`;
+  const out = [];
+  if (count(added, false)) out.push(n(count(added, false), 'new photo'));
+  if (count(added, true)) out.push(n(count(added, true), 'new video'));
+  if (count(removed, false)) out.push(`${n(count(removed, false), 'photo')} removed`);
+  if (count(removed, true)) out.push(`${n(count(removed, true), 'video')} removed`);
+  return out.length ? out : ['photos and videos'];
+}
+
+// The words behind "Changed: …" for an edit; empty when nothing visible changed.
+function changeLabels(live, version) {
+  const labels = [];
+  for (const field of changedFields(live, version)) {
+    for (const label of field === 'media' ? mediaLabels(live, version) : [FIELD_GROUP[field]]) {
+      if (!labels.includes(label)) labels.push(label);
+    }
+  }
+  return labels;
+}
+
+function euros(cents) {
+  return `€${(cents / 100).toFixed(2).replace(/\.00$/, '')}`;
+}
+
+// Splits `text` into [unchanged start, changed middle, unchanged end] against
+// `old`, never cutting an emoji in half. old === undefined: nothing to compare.
+function splitChange(text, old) {
+  if (old === undefined || old === text) return [text, '', ''];
+  if (old === null || old === '') return ['', text, ''];
+  const max = Math.min(text.length, old.length);
+  let start = 0;
+  while (start < max && text[start] === old[start]) start++;
+  let end = 0;
+  while (end < max - start && text[text.length - 1 - end] === old[old.length - 1 - end]) end++;
+  if (start > 0 && (text.charCodeAt(start - 1) & 0xfc00) === 0xd800) start--;
+  if (end > 0 && (text.charCodeAt(text.length - end) & 0xfc00) === 0xdc00) end--;
+  return [text.slice(0, start), text.slice(start, text.length - end), text.slice(text.length - end)];
+}
+
+const DAYS = [['mon', 'Mon'], ['tue', 'Tue'], ['wed', 'Wed'], ['thu', 'Thu'], ['fri', 'Fri'], ['sat', 'Sat'], ['sun', 'Sun']];
+
+// One line per day that has opening times: "Mon 09:00–12:00, 13:00–17:00".
+function weeklyHoursLines(weekly) {
+  const lines = [];
+  for (const [key, label] of DAYS) {
+    const slots = (Array.isArray(weekly?.[key]) ? weekly[key] : []).filter((s) =>
+      Array.isArray(s) && s.length === 2 && s.every((t) => typeof t === 'string' && /^\d{2}:\d{2}$/.test(t)));
+    if (slots.length) lines.push(`${label} ${slots.map(([from, to]) => `${from}–${to}`).join(', ')}`);
+  }
+  return lines;
+}
+
+// A rejection reason is the preset followed by the note; "Other" is only a
+// way to write the note alone.
+function joinReason(preset, note) {
+  const parts = [preset && preset !== 'Other' ? preset : '', (note ?? '').trim()].filter(Boolean);
+  if (parts.length < 2) return parts[0] ?? '';
+  return `${/[.!?]$/.test(parts[0]) ? parts[0] : `${parts[0]}.`} ${parts[1]}`;
+}
+// </pure>
 
 const sb = supabaseClient({ persistSession: true });
 const $ = (id) => document.getElementById(id);
@@ -105,8 +287,15 @@ const REASONS = [
   'Your biography is too short or unclear.',
   "We couldn't verify your experience or documents.",
 ];
+const TABS = [['apps', 'Applications'], ['new', 'New services'], ['edits', 'Edits'], ['live', 'Live services']];
+const SERVICE_REASONS = [
+  'Photos are not your own work', 'Price or description is unclear',
+  'Not an allowed service', 'Other',
+];
+let tab = 'apps';
 let filter = 'pending';
 let rows = [];
+let counts = {}; // tab -> number waiting; unset or null while unknown
 
 function show(section) {
   for (const id of ['signin', 'notAdmin', 'setup', 'loadError', 'dash']) $(id).hidden = id !== section;
@@ -148,9 +337,16 @@ async function route() {
 let loadSeq = 0;
 async function load() {
   const seq = ++loadSeq;
+  renderTabs();
   renderFilters();
   $('listMsg').textContent = 'Loading…';
   $('list').replaceChildren();
+  loadCounts(seq);
+  if (tab === 'apps') await loadApplications(seq);
+  else await loadServices(seq);
+}
+
+async function loadApplications(seq) {
   const { data, error } = await sb.rpc('admin_list_pro_applications', { p_status: filter });
   if (seq !== loadSeq) return; // a newer load() has taken over
   // PGRST202: the API can't find the function, i.e. 089 isn't live yet.
@@ -160,27 +356,91 @@ async function load() {
     return;
   }
   rows = data ?? [];
+  if (filter === 'pending') counts.apps = rows.length;
+  renderTabs();
   renderList();
+}
+
+async function loadServices(seq) {
+  const { data, error } = await sb.rpc('admin_list_service_queue', { p_queue: tab });
+  if (seq !== loadSeq) return;
+  if (error) {
+    counts[tab] = null; // unknown, not the old number
+    renderTabs();
+    // The applications work without 090 and 091, so only this tab says so.
+    $('listMsg').textContent = error.code === 'PGRST202'
+      ? "The services review database isn't set up yet. Apply migrations 090 and 091 from the Zoovo-app/zoovo-app repo, then reload this page."
+      : `Couldn't load services: ${error.message}`;
+    return;
+  }
+  rows = data ?? [];
+  counts[tab] = rows.length;
+  renderTabs();
+  renderList();
+}
+
+// The counts on the other tabs. Each answer is dropped if a newer load() has
+// started (or the reviewer signed out) in the meantime.
+async function loadCounts(seq) {
+  const jobs = [];
+  if (tab !== 'apps' || filter !== 'pending') {
+    jobs.push(['apps', () => sb.rpc('admin_list_pro_applications', { p_status: 'pending' })]);
+  }
+  for (const key of ['new', 'edits', 'live']) {
+    if (tab !== key) jobs.push([key, () => sb.rpc('admin_list_service_queue', { p_queue: key })]);
+  }
+  await Promise.all(jobs.map(async ([key, request]) => {
+    let count = null;
+    try {
+      const { data, error } = await request();
+      if (!error) count = (data ?? []).length;
+    } catch {
+      // no count for this tab
+    }
+    if (seq !== loadSeq) return;
+    counts[key] = count;
+    renderTabs();
+  }));
+}
+
+const tabButtons = {};
+function buildTabs() {
+  for (const [key] of TABS) {
+    const b = el('button', { className: 'chip' });
+    b.onclick = () => { tab = key; load(); };
+    tabButtons[key] = b;
+  }
+  const refresh = el('button', { className: 'chip', textContent: 'Refresh', onclick: load });
+  $('tabs').replaceChildren(...Object.values(tabButtons), el('span', { className: 'spacer' }), refresh);
+}
+
+function renderTabs() {
+  for (const [key, label] of TABS) {
+    const n = counts[key];
+    const b = tabButtons[key];
+    b.textContent = typeof n === 'number' ? `${label} · ${n >= 200 ? '200+' : n}` : label;
+    b.setAttribute('aria-pressed', String(tab === key));
+  }
 }
 
 function renderFilters() {
   const filters = $('filters');
   filters.replaceChildren();
+  filters.hidden = tab !== 'apps'; // the status filters are the applications'
   for (const [value, label] of FILTERS) {
     const b = el('button', { className: 'chip', textContent: label });
     b.setAttribute('aria-pressed', String(filter === value));
     b.onclick = () => { filter = value; load(); };
     filters.append(b);
   }
-  const refresh = el('button', { className: 'chip', textContent: 'Refresh', onclick: load });
-  filters.append(el('span', { className: 'spacer' }), refresh);
 }
 
 function renderList() {
-  // The RPC returns at most 200 rows.
+  // The RPCs return at most 200 rows.
   const capped = rows.length >= 200 ? ' (the list stops at 200)' : '';
-  $('listMsg').textContent = rows.length ? `${rows.length} shown, oldest first${capped}` : 'Nothing here.';
-  $('list').replaceChildren(...rows.map(card));
+  const order = tab === 'live' ? 'latest change first' : 'oldest first';
+  $('listMsg').textContent = rows.length ? `${rows.length} shown, ${order}${capped}` : 'Nothing here.';
+  $('list').replaceChildren(...(tab === 'apps' ? rows.map(card) : rows.map((r) => serviceCard(r, tab))));
 }
 
 // The URL is normalised first, so "../" tricks can't leave the bucket.
@@ -283,6 +543,339 @@ function actions(a) {
   return box;
 }
 
+// ---------------------------------------------------------------------------
+// Services. Everything a professional wrote (titles, descriptions, labels,
+// notes, even the media paths) goes in through textContent or an allow-listed
+// URL, never innerHTML.
+// ---------------------------------------------------------------------------
+
+const STATUS_LABELS = { live: 'live', paused: 'paused', removed: 'offline' };
+const MODES = {
+  customer_home: "at the pet parent's home", pro_home: "at the professional's place", both: 'at either place',
+};
+const UNITS = { fixed: 'Fixed price', hour: 'Per hour', day: 'Per day', night: 'Per night', visit: 'Per visit' };
+const SIZES = [['small', 'Small'], ['medium', 'Medium'], ['large', 'Large']];
+const REQUIREMENTS = {
+  vaccinated_only: 'Vaccinated pets only', small_dogs_only: 'Small dogs only',
+  large_dogs_accepted: 'Large dogs welcome', cats_accepted: 'Cats welcome',
+  medication: 'Can give medication', puppies: 'Puppies welcome',
+  senior_pets: 'Senior pets welcome', special_needs: 'Special needs welcome',
+};
+const POLICIES = { flexible: 'Flexible', moderate: 'Moderate', strict: 'Strict' };
+
+function categoryText(n) {
+  if (!n.category) return null;
+  if (n.category === 'other') return n.other_category_label ? `Other: ${n.other_category_label}` : 'Other';
+  return CATEGORIES[n.category] ?? n.category;
+}
+
+// "<address_label> · <mode, radius>". Never the coordinates.
+function locationText(n) {
+  const how = [
+    n.location_mode ? (MODES[n.location_mode] ?? n.location_mode) : null,
+    n.service_radius_km !== null ? `up to ${n.service_radius_km} km` : null,
+  ].filter(Boolean).join(', ');
+  return [n.address_label, how].filter(Boolean).join(' · ') || null;
+}
+
+const policyText = (n) => (n.cancellation_policy ? (POLICIES[n.cancellation_policy] ?? n.cancellation_policy) : null);
+
+const none = (text = 'Not set') => el('span', { className: 'muted', textContent: text });
+
+// `other` is the version to compare against (its changed part is marked), or
+// undefined when there is nothing to compare.
+function textNodes(value, other) {
+  if (value === null) return [none()];
+  const [before, changed, after] = splitChange(value, other);
+  return [before, changed ? el('mark', { textContent: changed }) : null, after];
+}
+const compareText = (read) => (v, o) => textNodes(read(v), o ? read(o) : undefined);
+
+function priceNodes(v, o) {
+  const same = (key) => !o || JSON.stringify(v[key]) === JSON.stringify(o[key]);
+  const piece = (text, unchanged) => (unchanged ? text : el('mark', { textContent: text }));
+  const join = (items) => items.flatMap((item, i) => (i ? [' · ', item] : [item]));
+  const prices = [];
+  if (v.custom_quote) prices.push(piece('Custom quote (price on request)', same('custom_quote')));
+  for (const [key, label] of SIZES) {
+    const cents = v.size_prices?.[key];
+    if (typeof cents === 'number') prices.push(piece(`${label} ${euros(cents)}`, !o || (o.size_prices?.[key] ?? null) === cents));
+  }
+  if (v.base_price_cents !== null) {
+    prices.push(piece(`${v.size_prices ? 'Base ' : ''}${euros(v.base_price_cents)}`, same('base_price_cents')));
+  }
+  const extras = [];
+  if (v.extra_pet_price_cents !== null) extras.push(piece(`Extra pet +${euros(v.extra_pet_price_cents)}`, same('extra_pet_price_cents')));
+  if (v.weekend_surcharge_pct !== null) extras.push(piece(`Weekends +${v.weekend_surcharge_pct}%`, same('weekend_surcharge_pct')));
+  if (v.holiday_surcharge_pct !== null) extras.push(piece(`Holidays +${v.holiday_surcharge_pct}%`, same('holiday_surcharge_pct')));
+  const unit = v.price_unit ? piece(UNITS[v.price_unit] ?? v.price_unit, same('price_unit')) : null;
+  if (!prices.length && !extras.length && !unit) return [none('No price set')];
+  return [
+    el('div', {}, ...(unit ? [unit, ': '] : []), ...(prices.length ? join(prices) : [none('No price set')])),
+    extras.length ? el('div', {}, ...join(extras)) : null,
+  ];
+}
+
+function listNodes(v, o) {
+  if (!v.whats_included.length) return [none('None')];
+  return [el('ul', { className: 'plain' }, ...v.whats_included.map((item) =>
+    el('li', {}, !o || o.whats_included.includes(item) ? item : el('mark', { textContent: item }))))];
+}
+
+function requirementNodes(v, o) {
+  if (!v.requirements.length) return [none('None')];
+  return [el('div', { className: 'tags' }, ...v.requirements.map((key) => el('span', {
+    className: o && !o.requirements.includes(key) ? 'tag added' : 'tag',
+    textContent: REQUIREMENTS[key] ?? key,
+  })))];
+}
+
+// A photo opens full size in a new tab; a video shows its poster and a Play
+// button that swaps in the player (nothing is downloaded before that).
+function thumb(m, number, added) {
+  const holder = el('span', { className: added ? 'thumb added' : 'thumb' });
+  const src = serviceMediaUrl(m.path);
+  const poster = serviceMediaUrl(m.poster_path);
+  const badge = (text) => holder.append(el('span', { className: added ? 'badge added' : 'badge', textContent: text }));
+  if (m.type === 'photo' && src) {
+    holder.append(el('a', { href: src, target: '_blank', rel: 'noopener noreferrer' },
+      el('img', { referrerPolicy: 'no-referrer', loading: 'lazy', alt: `Photo ${number}`, src })));
+    if (added) badge('New');
+  } else if (m.type === 'video' && src) {
+    if (poster) holder.append(el('img', { referrerPolicy: 'no-referrer', loading: 'lazy', alt: `Video ${number}`, src: poster }));
+    const play = el('button', { type: 'button', className: 'play', textContent: 'Play' });
+    play.setAttribute('aria-label', `Play video ${number}`);
+    play.onclick = () => {
+      const video = el('video', { controls: true, preload: 'none', src });
+      if (poster) video.poster = poster;
+      holder.classList.add('playing');
+      holder.replaceChildren(video);
+      const started = video.play();
+      if (started?.catch) started.catch(() => {}); // the controls are right there
+    };
+    holder.append(play);
+    badge(added ? 'New video' : 'Video');
+  } else {
+    holder.append('Not shown'); // an unknown type or a path outside the allow-list
+  }
+  return holder;
+}
+
+function mediaNodes(v, o) {
+  if (!v.media.length) return [none('No photos or videos')];
+  const before = o ? new Set(o.media.map((m) => m.path)) : null;
+  return [el('div', { className: 'strip' },
+    ...v.media.map((m, i) => thumb(m, i + 1, before !== null && !before.has(m.path))))];
+}
+
+function coverNode(n) {
+  for (const m of n.media) {
+    const url = serviceMediaUrl(m.type === 'video' ? m.poster_path : m.path);
+    if (url && (m.type === 'photo' || m.type === 'video')) {
+      return el('img', { className: 'cover', alt: '', referrerPolicy: 'no-referrer', src: url });
+    }
+  }
+  return el('span', { className: 'cover' });
+}
+
+// What the team reviews, in display order. compareOnly rows are the card's
+// header when there is nothing to compare.
+const ROWS = [
+  { label: 'Title', fields: ['title'], compareOnly: true, render: compareText((n) => n.title) },
+  { label: 'Category', fields: ['category', 'other_category_label'], compareOnly: true, render: compareText(categoryText) },
+  { label: 'Photos and videos', fields: ['media'], render: mediaNodes },
+  {
+    label: 'Price',
+    fields: ['price_unit', 'base_price_cents', 'size_prices', 'extra_pet_price_cents',
+      'weekend_surcharge_pct', 'holiday_surcharge_pct', 'custom_quote'],
+    render: priceNodes,
+  },
+  { label: 'Description', fields: ['description'], render: compareText((n) => n.description) },
+  { label: "What's included", fields: ['whats_included'], render: listNodes },
+  { label: 'Experience', fields: ['experience_note'], render: compareText((n) => n.experience_note) },
+  { label: 'Location', fields: ['location_mode', 'service_radius_km', 'address_label'], compareOnly: true, render: compareText(locationText) },
+  { label: 'Requirements', fields: ['requirements'], render: requirementNodes },
+  { label: 'Extra requirements', fields: ['extra_requirements'], render: compareText((n) => n.extra_requirements) },
+  { label: 'Cancellation policy', fields: ['cancellation_policy'], render: compareText(policyText) },
+];
+
+const block = (label, ...content) => el('div', { className: 'field' },
+  el('span', { className: 'field-label', textContent: label }), ...content);
+// `column` names the side in a comparison, for the narrow layout where the two
+// sides stack and the LIVE NOW / SUBMITTED heading is hidden.
+const panel = (nodes, changed = false, column = '') => {
+  const node = el('div', { className: changed ? 'box changed' : 'box' }, ...nodes);
+  if (column) node.dataset.col = column;
+  return node;
+};
+
+// Settings of the service itself: not versioned, so never compared.
+function settingsBlocks(r) {
+  const s = r.service ?? {};
+  const hours = weeklyHoursLines(s.weekly_hours);
+  return [
+    s.status === 'removed' && s.removed_reason ? block('Why it was taken offline', panel([s.removed_reason])) : null,
+    block('Weekly hours', panel(hours.length ? hours.map((line) => el('div', { textContent: line })) : [none('No opening hours set')])),
+    block('Bookings per day', panel([typeof s.max_bookings_per_day === 'number' ? String(s.max_bookings_per_day) : none()])),
+  ];
+}
+
+function singleView(r, n) {
+  return [
+    ...ROWS.filter((row) => !row.compareOnly).map((row) => block(row.label, panel(row.render(n)))),
+    ...settingsBlocks(r),
+  ];
+}
+
+// Live and submitted side by side; changed rows in amber, the rest hidden.
+function editView(r) {
+  const s = r.service ?? {};
+  const a = normaliseVersion(r.live);
+  const b = normaliseVersion(r.version);
+  const changed = new Set(changedFields(r.live, r.version));
+  const labels = changeLabels(r.live, r.version);
+
+  const text = el('span', { className: 'text' }, 'Changed: ');
+  if (labels.length) {
+    labels.forEach((label, i) => {
+      if (i) text.append(i === labels.length - 1 ? ' and ' : ', ');
+      text.append(el('b', { textContent: label }));
+    });
+  } else {
+    text.append('nothing visible (the exact location may differ)');
+  }
+  text.append('. ', s.status === 'removed' ? 'The service is offline and stays offline if you approve.'
+    : s.status === 'paused' ? 'The service is paused and stays paused if you approve.'
+      : 'Pet parents see the live version until you decide.');
+  const summary = el('div', { className: 'summary' }, text);
+
+  const changedRows = [];
+  const unchangedRows = [];
+  for (const row of ROWS) {
+    if (row.fields.some((f) => changed.has(f))) {
+      changedRows.push(block(row.label, el('div', { className: 'cols' }, panel(row.render(a), false, 'LIVE NOW'), panel(row.render(b, a), true, 'SUBMITTED'))));
+    } else {
+      const unchanged = block(row.label, panel(row.render(b)));
+      unchanged.hidden = true;
+      unchangedRows.push(unchanged);
+    }
+  }
+
+  if (unchangedRows.length) {
+    const toggle = el('button', { type: 'button', className: 'chip small', textContent: 'Show unchanged fields' });
+    toggle.setAttribute('aria-expanded', 'false');
+    toggle.onclick = () => {
+      const open = unchangedRows[0].hidden;
+      for (const row of unchangedRows) row.hidden = !open;
+      toggle.textContent = open ? 'Hide unchanged fields' : 'Show unchanged fields';
+      toggle.setAttribute('aria-expanded', String(open));
+    };
+    summary.append(toggle);
+  }
+
+  return [
+    summary,
+    changedRows.length ? el('div', { className: 'cols colheads' },
+      el('span', { className: 'colhead', textContent: 'LIVE NOW' }),
+      el('span', { className: 'colhead', textContent: 'SUBMITTED' })) : null,
+    ...changedRows,
+    ...unchangedRows,
+    ...settingsBlocks(r),
+  ];
+}
+
+function serviceCard(r, queue) {
+  const s = r.service ?? {};
+  const shown = queue === 'live' ? (r.live ?? r.version) : (r.version ?? r.live);
+  const n = normaliseVersion(shown);
+  const title = n.title ?? 'Untitled service';
+
+  const tags = el('div', { className: 'tags' });
+  const tag = (kind, label) => tags.append(el('span', { className: kind ? `tag ${kind}` : 'tag', textContent: label }));
+  if (queue === 'new') tag('status', 'new service');
+  if (queue === 'edits') tag('status', 'edit to a live service');
+  if (queue === 'live') tag(s.status === 'live' ? 'status' : 'warn', STATUS_LABELS[s.status] ?? s.status);
+  else if (s.status === 'paused' || s.status === 'removed') tag('warn', STATUS_LABELS[s.status]);
+  if (queue === 'live' && r.version) tag('added', 'edit waiting for review');
+  if (categoryText(n)) tag('', categoryText(n));
+  if (locationText(n)) tag('', locationText(n));
+
+  const head = el('div', { className: 'svc-head' },
+    coverNode(n),
+    el('div', { className: 'svc-title' },
+      el('h2', { textContent: title }),
+      tags,
+      el('span', {}, 'by ', el('strong', { textContent: r.pro?.display_name ?? 'Unknown' }), ` · ${r.pro?.status ?? 'unknown'} professional`),
+      queue !== 'live' && r.submitted_at ? el('span', { className: 'waiting', textContent: `Waiting ${waited(r.submitted_at)}` }) : null,
+    ));
+  return el('article', { className: 'card svc' },
+    head,
+    ...(queue === 'edits' ? editView(r) : singleView(r, n)),
+    serviceActions(r, queue, title));
+}
+
+function serviceActions(r, queue, title) {
+  const s = r.service ?? {};
+  const controls = el('div', { className: 'actions sep' });
+
+  if ((queue === 'new' || queue === 'edits') && r.version?.id) {
+    const edit = queue === 'edits';
+    const approve = el('button', { className: 'btn', textContent: edit ? 'Approve the change' : 'Approve' });
+    approve.onclick = () => {
+      const question = edit
+        ? `Approve this change to "${title}"? The new version replaces the live one right away and the professional gets an email.${s.status === 'live' ? '' : ` The service stays ${STATUS_LABELS[s.status] ?? s.status}.`}`
+        : `Approve "${title}"? It goes live right away and the professional gets an email.`;
+      if (!confirm(question)) return;
+      act('admin_review_service_version', { p_version_id: r.version.id, p_approve: true }, approve);
+    };
+
+    const preset = el('select', {}, el('option', { value: '', textContent: 'Choose a reason…' }),
+      ...SERVICE_REASONS.map((x) => el('option', { value: x, textContent: x })));
+    const note = el('textarea', { rows: 3, maxLength: 1000 });
+    const reject = el('button', { className: 'btn secondary', textContent: edit ? 'Reject the change' : 'Reject' });
+    reject.onclick = () => {
+      const reason = joinReason(preset.value, note.value);
+      if (reason.length < 5) {
+        return alert(preset.value === 'Other' ? 'Write a note for the professional.' : 'Pick a reason or write a note for the professional.');
+      }
+      act('admin_review_service_version', { p_version_id: r.version.id, p_approve: false, p_reason: reason }, reject);
+    };
+    controls.append(
+      el('div', { className: 'row' }, approve),
+      el('label', {}, 'Reason for rejecting', preset),
+      el('label', {}, 'Note for the professional (sent by email)', note),
+      el('div', { className: 'row center' }, reject, el('span', {
+        className: 'muted',
+        textContent: edit ? (s.status === 'live' ? 'The live version stays online.' : 'The live version stays as it is.')
+          : 'The professional can fix it and send it again.',
+      })),
+    );
+  }
+
+  const dashed = controls.children.length > 0;
+  const offlineRow = (button, hint) => controls.append(
+    el('div', { className: dashed ? 'row center sep dashed' : 'row center' }, button, el('span', { className: 'muted', textContent: hint })));
+  if ((queue === 'edits' || queue === 'live') && (s.status === 'live' || s.status === 'paused')) {
+    const offline = el('button', { className: 'btn navy', textContent: 'Take the service offline' });
+    offline.onclick = () => {
+      const answer = prompt(`Why are you taking "${title}" offline? The professional sees this reason.`);
+      if (answer === null) return; // cancelled
+      const reason = answer.trim();
+      if (reason.length < 5) return alert('Give a reason of at least 5 characters.');
+      act('admin_set_service_status', { p_service_id: s.id, p_status: 'removed', p_reason: reason }, offline);
+    };
+    offlineRow(offline, "Hides the live version too. Use for problems that can't wait.");
+  } else if (queue === 'live' && s.status === 'removed' && r.live) {
+    const back = el('button', { className: 'btn navy', textContent: 'Put back online' });
+    back.onclick = () => {
+      if (!confirm(`Put "${title}" back online? Pet parents can see and book it again right away.`)) return;
+      act('admin_set_service_status', { p_service_id: s.id, p_status: 'live' }, back);
+    };
+    offlineRow(back, 'Shows the live version to pet parents again.');
+  }
+  return controls.children.length ? controls : null;
+}
+
 async function act(fn, args, button) {
   // Lock every control on the card so approve and reject can't both be sent.
   const controls = [...button.closest('article').querySelectorAll('button, select, textarea')];
@@ -328,10 +921,14 @@ $('signout').onclick = async () => {
   await sb.auth.signOut();
   loadSeq++; // a load() still in flight must not render into the cleared list
   rows = [];
-  $('list').replaceChildren(); // no applicant data stays in the page
+  counts = {};
+  tab = 'apps';
+  renderTabs();
+  $('list').replaceChildren(); // no applicant or service data stays in the page
   route();
 };
 
+buildTabs();
 route();
 </script>
 </body></html>
