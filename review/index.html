@@ -104,7 +104,7 @@ ul.plain{margin:0;padding-left:18px;white-space:normal}
 </section>
 
 <section id="setup" class="card" hidden>
-  <p><strong>The review database isn't set up yet.</strong> Apply migrations 088 and 089 from the Zoovo-app/zoovo-app repo, then reload this page.</p>
+  <p><strong>The review database isn't set up yet.</strong> Apply migrations 099 and 100 from the Zoovo-app/zoovo-app repo, then reload this page.</p>
 </section>
 
 <section id="loadError" class="card" hidden><p class="error" id="loadErrorText"></p></section>
@@ -439,7 +439,7 @@ async function load() {
 async function loadApplications(seq) {
   const { data, error } = await sb.rpc('admin_list_pro_applications', { p_status: filter });
   if (seq !== loadSeq) return; // a newer load() has taken over
-  // PGRST202: the API can't find the function, i.e. 089 isn't live yet.
+  // PGRST202: the API can't find the function, i.e. 100 isn't live yet.
   if (error?.code === 'PGRST202') return show('setup');
   if (error) {
     $('listMsg').textContent = `Couldn't load applications: ${error.message}`;
