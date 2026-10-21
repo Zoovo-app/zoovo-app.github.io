@@ -384,7 +384,7 @@ let counts = {}; // tab -> number waiting; unset or null while unknown
 // rows, so 200 there means "200 or more".
 let exact = new Set();
 // Set once the API says admin_service_queue_counts doesn't exist (migration
-// 091 older than that function): the counts then come from the lists.
+// 102 older than that function): the counts then come from the lists.
 let countsRpcMissing = false;
 
 function show(section) {
@@ -457,9 +457,9 @@ async function loadServices(seq) {
   if (error) {
     if (!exact.has(activeTab)) counts[activeTab] = null; // unknown, not the old number
     renderTabs();
-    // The applications work without 090 and 091, so only this tab says so.
+    // The applications work without 101 and 102, so only this tab says so.
     $('listMsg').textContent = error.code === 'PGRST202'
-      ? "The services review database isn't set up yet. Apply migrations 090 and 091 from the Zoovo-app/zoovo-app repo, then reload this page."
+      ? "The services review database isn't set up yet. Apply migrations 101 and 102 from the Zoovo-app/zoovo-app repo, then reload this page."
       : `Couldn't load services: ${error.message}`;
     return;
   }
