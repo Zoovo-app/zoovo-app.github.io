@@ -113,6 +113,46 @@ table.pros{width:100%;min-width:980px;border-collapse:collapse;font-size:14px}
 .pros .sub th:last-child,.pros .sub td:last-child{padding-right:0}
 .pros .sub tbody tr:last-child>td{border-bottom:0}
 .sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+table.cases{width:100%;min-width:760px;border-collapse:collapse;font-size:14px}
+.cases th{padding:12px 16px;text-align:left;font-size:12px;font-weight:700;letter-spacing:1px;text-transform:uppercase;color:var(--muted);border-bottom:1px solid var(--line)}
+.cases td{padding:12px 16px;vertical-align:top;border-bottom:1px solid var(--line)}
+.cases tbody tr:last-child>td{border-bottom:0}
+.cases tr.selected>td{background:#fff6e0}
+.cases .num{text-align:right;white-space:nowrap;font-weight:700}
+.cases .item{min-height:44px}
+.cases .linkish{font:inherit;font-weight:700;color:var(--coral);background:none;border:0;padding:0;cursor:pointer;text-align:left;text-decoration:underline;overflow-wrap:anywhere}
+.cases .need{font-weight:700;color:#8a5a00;white-space:nowrap}
+.cases .wait{white-space:nowrap}
+.cases .need.bad{color:#b3261e}
+.cases .need.done{color:#1d6b3a}
+.case{display:flex;flex-direction:column;gap:16px}
+.case-head{display:flex;flex-direction:column;gap:4px}
+.case-head .tags,.case-head .waiting{margin:0}
+.pane{padding:12px 14px;border-radius:10px;background:#f5f8fb;display:flex;flex-direction:column;gap:4px;font-size:14px;overflow-wrap:anywhere}
+.pane.report{background:#fff6e0;border:1px solid #f2d58a}
+.pane.report>.colhead{color:#6b4700}
+.pane .problem+.problem{margin-top:6px}
+.pane-chat{display:flex;flex-direction:column;align-items:flex-start;gap:6px;margin-top:4px}
+.pane-chat .chat{align-self:stretch}
+.money{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:2px 12px}
+.money .r{text-align:right;font-weight:700}
+.ids{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;overflow-wrap:anywhere}
+.chatlog{max-height:320px;overflow:auto;display:flex;flex-direction:column;gap:8px;background:#fff;border:1px solid var(--line);border-radius:10px;padding:10px 12px}
+.chatlog .msg>div{white-space:pre-wrap;overflow-wrap:anywhere}
+.actions p:empty{display:none}
+.decision-title{font-weight:700;color:var(--navy);font-size:17px}
+.option{display:flex;flex-wrap:wrap;align-items:center;gap:10px 14px;padding:10px 12px;border-radius:12px;border:1px solid var(--line)}
+.option.suggested{border:2px solid var(--coral);background:#fff8f6}
+.option .hint{flex:1 1 300px;color:var(--muted);font-size:14px}
+.option .wide{flex-basis:100%}
+.actions .option label{flex-direction:row;align-items:center;gap:6px;font-size:14px;font-weight:600;color:var(--navy)}
+.amount{display:flex;align-items:center;gap:4px;background:#fff;border:1px solid var(--line);border-radius:10px;padding:6px 10px;font-weight:400}
+.amount input{width:84px;border:0;border-radius:0;padding:0;background:transparent}
+.banner{padding:10px 12px;border-radius:10px;font-size:14px;font-weight:600;margin-top:12px}
+.case .banner{margin-top:0}
+.banner.ok{background:#e3f4e9;color:#1d6b3a}
+.banner.warn{background:#fff6e0;color:#6b4700;border:1px solid #f2d58a}
+.banner.bad{background:#fdecea;color:#b3261e}
 @media (max-width:600px){.app{grid-template-columns:1fr}dl{grid-template-columns:1fr}.colheads{display:none}.box[data-col]::before{content:attr(data-col);display:block;margin-bottom:4px;font-size:11px;font-weight:700;letter-spacing:1px;color:var(--muted)}}
 </style></head>
 <body><header><div class="wrap"><a href="/">ZOOVO</a><button id="signout" hidden>Sign out</button></div></header>
@@ -153,8 +193,13 @@ table.pros{width:100%;min-width:980px;border-collapse:collapse;font-size:14px}
 <script type="module">
 import { supabaseClient } from '/assets/supabase.js';
 import {
-  PRO_SORTS, cancelRate, cancellationRows, durationLabel, formatEuro, kvkUrl, proSubline,
-  reasonCounts, sortPros, stateText, stripeTypeNote, verificationBadges,
+  PRO_SORTS, allowedDecisions, asCaseRow, attentionLabel, bookingWhen, cancelRate, cancellationRows,
+  cancellationText, caseItems, centsToInput, chatLines, confirmText, decisionPreview, durationLabel,
+  failedJobs, formatEuro, isOpenCase, kvkUrl, methodLabel, openProblems, parseEuroToCents,
+  paymentStatusLabel, problemDetails, proSubline, reasonCounts, refundRows, refundableCents,
+  retryConfirmText, reverseConfirmText, saveErrorText, savedText, sortPros, stateText,
+  stripeTypeNote, suggestedRefund, transferLabel, validateDecision, validateNote, verificationBadges,
+  waitingSince, whenLabel,
 } from '/review/lib.js';
 
 // Applicants choose their avatar URL (the database only checks for https), so
@@ -405,7 +450,10 @@ const REASONS = [
   'Your biography is too short or unclear.',
   "We couldn't verify your experience or documents.",
 ];
-const TABS = [['apps', 'Applications'], ['new', 'New services'], ['edits', 'Edits'], ['live', 'Live services'], ['pros', 'Pros']];
+const TABS = [
+  ['apps', 'Applications'], ['new', 'New services'], ['edits', 'Edits'], ['live', 'Live services'],
+  ['problems', 'Problems'], ['pros', 'Pros'],
+];
 const SERVICE_REASONS = [
   'Photos are not your own work', 'Price or description is unclear',
   'Not an allowed service', 'Other',
@@ -426,6 +474,18 @@ const cancellationSlots = new Map(); // pro id -> the element on screen that sho
 // then shows only the reason counts.
 let cancellationsMissing = false;
 const CANCELLATIONS_LIMIT = 20;
+// Problems: the case open below the list (a booking id), the cases with a
+// request on its way (nothing may be sent for them again), and the cases the
+// database answered for since the last load, by the action: 'decision',
+// 'reversal' or 'retry'.
+let selectedCase = null;
+const busyCases = new Set();
+const savedCases = new Map();
+const caseChats = new Map(); // booking id -> {status: 'loading'|'ok'|'error'|'missing', open, rows, message}
+const CHAT_LIMIT = 100;
+// A message above the list that must survive the reload an action triggers.
+let problemNotice = null;
+let keepNotice = false;
 let counts = {}; // tab -> number waiting; unset or null while unknown
 // Tabs whose number is the true count (from the last answer of
 // admin_service_queue_counts). The others come from a list, which stops at 200
@@ -476,6 +536,9 @@ let loadSeq = 0;
 async function load() {
   const seq = ++loadSeq;
   prosLoaded = false;
+  if (!keepNotice) problemNotice = null;
+  keepNotice = false;
+  savedCases.clear();
   renderTabs();
   renderFilters();
   $('listMsg').textContent = 'Loading…';
@@ -483,6 +546,7 @@ async function load() {
   loadCounts(seq);
   if (activeTab === 'apps') await loadApplications(seq);
   else if (activeTab === 'pros') await loadPros(seq);
+  else if (activeTab === 'problems') await loadProblems(seq);
   else await loadServices(seq);
 }
 
@@ -538,10 +602,46 @@ async function loadPros(seq) {
   renderList();
 }
 
+async function loadProblems(seq) {
+  rows = []; // the list must never show another tab's rows
+  caseChats.clear();
+  chatPainters.clear();
+  const { data, error } = await sb.rpc('admin_list_problem_cases', { p_filter: 'open' });
+  if (seq !== loadSeq) return;
+  if (error) {
+    counts.problems = null; // unknown, not the old number
+    renderTabs();
+    // Like the pros: the other tabs work without it, so only this one says so.
+    $('listMsg').textContent = error.code === 'PGRST202'
+      ? "The problems view isn't set up yet. Apply migrations 104 to 111 from the Zoovo-app/zoovo-app repo, then reload this page."
+      : `Couldn't load problems: ${error.message}`;
+    return;
+  }
+  rows = Array.isArray(data) ? data : [];
+  counts.problems = rows.length; // the open list is the count
+  renderTabs();
+  renderList();
+}
+
 // The counts on the tabs. Each answer is dropped if a newer load() has started
 // (or the reviewer signed out) in the meantime.
 async function loadCounts(seq) {
-  await Promise.all([loadApplicationCount(seq), loadServiceCounts(seq)]);
+  await Promise.all([loadApplicationCount(seq), loadServiceCounts(seq), loadProblemCount(seq)]);
+}
+
+// The open problems, unless the list on screen already says.
+async function loadProblemCount(seq) {
+  if (activeTab === 'problems') return;
+  let count = null;
+  try {
+    const { data, error } = await sb.rpc('admin_list_problem_cases', { p_filter: 'open' });
+    if (!error && Array.isArray(data)) count = data.length;
+  } catch {
+    // no count for this tab
+  }
+  if (seq !== loadSeq) return;
+  counts.problems = count;
+  renderTabs();
 }
 
 // The pending applications, unless the list on screen already says.
@@ -647,6 +747,7 @@ function renderList() {
   // The RPCs return at most 200 rows.
   const capped = rows.length >= 200 ? ' (the list stops at 200)' : '';
   if (activeTab === 'pros') return renderPros(capped);
+  if (activeTab === 'problems') return renderProblems(capped);
   const order = activeTab === 'live' ? 'latest change first' : 'oldest first';
   $('listMsg').textContent = rows.length ? `${rows.length} shown, ${order}${capped}` : 'Nothing here.';
   $('list').replaceChildren(...(activeTab === 'apps' ? rows.map(card) : rows.map((r) => serviceCard(r, activeTab))));
@@ -951,6 +1052,376 @@ function proRows(p) {
   };
   row.lastElementChild.append(toggle);
   return [row, detail];
+}
+
+// ---------------------------------------------------------------------------
+// Problems. These actions move money, so: the note is required, the amount is
+// checked before anything is sent, the reviewer confirms in words that name
+// the amount, nothing is sent twice, and the page shows what the database
+// answered, never what it hoped for. Everything in a case (names, notes, the
+// chat) comes from users: textContent only, as everywhere else on this page.
+// ---------------------------------------------------------------------------
+
+const caseId = (row) => (typeof row?.booking?.id === 'string' ? row.booking.id : null);
+
+// Cases not yet decided on this page. A case the database answered for, with
+// nothing left open in the answer, no longer counts.
+const openCount = () => rows.filter((r) => !(savedCases.has(caseId(r)) && !isOpenCase(r))).length;
+
+const mailLink = (email) => (typeof email === 'string' && email
+  ? el('a', { href: `mailto:${encodeURIComponent(email).replace('%40', '@')}`, textContent: email })
+  : none('no email'));
+
+function notice(kind, text) {
+  const node = el('div', { className: `banner ${kind}`, textContent: text });
+  node.setAttribute('role', kind === 'bad' ? 'alert' : 'status');
+  return node;
+}
+
+function renderProblems(capped) {
+  if (!rows.some((r) => caseId(r) === selectedCase)) selectedCase = rows.length ? caseId(rows[0]) : null;
+  $('listMsg').textContent = rows.length ? `${openCount()} open, oldest first${capped}` : 'No open problems.';
+  const chosen = rows.find((r) => caseId(r) === selectedCase);
+  $('list').replaceChildren(...[
+    el('p', { className: 'muted', textContent: 'Reports after a booking, and card disputes. The pro’s payout stays on hold until you decide.' }),
+    problemNotice ? notice(problemNotice.kind, problemNotice.text) : null,
+    rows.length ? casesTable() : null,
+    chosen ? caseCard(chosen) : null,
+  ].filter(Boolean));
+}
+
+function casesTable() {
+  const th = (text, className = '') => el('th', { scope: 'col', textContent: text, className });
+  const head = el('thead', {}, el('tr', {},
+    th('Reported by'), th('Reason'), th('Booking'), th('Amount', 'num'), th('Attention')));
+  return el('div', { className: 'tablewrap' },
+    el('table', { className: 'cases' }, head, el('tbody', {}, ...rows.map(caseTableRow))));
+}
+
+function caseTableRow(row) {
+  const id = caseId(row);
+  const b = row.booking ?? {};
+  const items = caseItems(row);
+  const selected = id !== null && id === selectedCase;
+  const since = waitingSince(row);
+  const attention = attentionLabel(row) || (savedCases.has(id) ? 'Resolved' : '—');
+  const failed = row.attention === 'refund_failed' || row.attention === 'transfer_failed';
+  const need = savedCases.has(id) && !isOpenCase(row) ? 'need done' : failed ? 'need bad' : 'need';
+
+  const pick = (item) => {
+    const button = el('button', { type: 'button', className: 'linkish', textContent: item.who });
+    // The label starts with the visible name, so voice control can say it.
+    button.setAttribute('aria-label', `${item.who}, open the case: ${item.reason}`);
+    if (selected) button.setAttribute('aria-current', 'true');
+    // Opening the case that is already open would only throw away a note being typed.
+    button.onclick = () => { if (id === selectedCase) return; selectedCase = id; renderList(); };
+    return button;
+  };
+  return el('tr', { className: selected ? 'selected' : '' },
+    el('td', {}, ...items.map((item) => el('div', { className: 'item' }, pick(item), el('br'), el('span', { className: 'muted', textContent: item.role })))),
+    el('td', {}, ...items.map((item) => el('div', { className: 'item', textContent: item.reason }))),
+    el('td', {},
+      el('div', { textContent: [b.service_title, row.pro?.display_name].filter(Boolean).join(' · ') || 'Booking' }),
+      el('span', { className: 'muted', textContent: `${bookingWhen(b.start_at, b.end_at)}${b.transfer_status === 'sent' ? ' · transfer already sent' : ''}` })),
+    el('td', { className: 'num', textContent: formatEuro(b.price_cents) }),
+    el('td', {},
+      el('div', { className: need, textContent: attention }),
+      since ? el('span', { className: 'muted wait', textContent: `waiting ${waited(since)}` }) : null));
+}
+
+const pane = (title, ...lines) => el('div', { className: 'pane' },
+  el('span', { className: 'colhead', textContent: title }),
+  ...lines.filter((l) => l !== null && l !== undefined && l !== false)
+    .map((l) => (typeof l === 'string' ? el('span', { textContent: l }) : l)));
+
+function caseCard(row) {
+  const b = row.booking ?? {};
+  const id = caseId(row);
+  const items = caseItems(row);
+  const open = openProblems(row);
+  const since = waitingSince(row);
+  const money = (label, value) => [el('span', { textContent: label }), el('span', { className: 'r', textContent: value })];
+  const proName = row.pro?.display_name ?? 'Deleted account';
+  const customerName = row.customer?.name ?? 'Deleted account';
+
+  const tags = el('div', { className: 'tags' },
+    ...items.map((i) => el('span', {
+      className: 'tag status',
+      textContent: i.role === 'pet parent' || i.role === 'pro' ? `reported by the ${i.role}` : `${i.who} (${i.role})`,
+    })),
+    b.transfer_status === 'frozen' ? el('span', { className: 'tag added', textContent: 'payout on hold' }) : null,
+    b.transfer_status === 'sent' ? el('span', { className: 'tag added', textContent: 'transfer already sent' }) : null,
+    row.attention === 'refund_failed' || row.attention === 'transfer_failed'
+      ? el('span', { className: 'tag warn', textContent: attentionLabel(row) }) : null);
+
+  const saved = savedCases.get(id);
+  const savedBanner = !saved ? null
+    : saved === 'decision'
+      ? (savedText(row) ? notice('ok', savedText(row))
+        : notice('warn', 'The server answered, but this case still has open problems. Check the state below before you do anything else.'))
+      : saved === 'reversal'
+        ? notice('ok', `Reversal requested. Transfer status now: ${transferLabel(b.transfer_status)}.`)
+        : notice('ok', 'Retry queued. The job runs again; refresh in a minute to see whether it worked.');
+
+  const cancelled = cancellationText(b);
+  const refunds = refundRows(row);
+  const problems = problemDetails(row);
+  const stripeIds = [['Payment', b.payment_intent_id], ['Transfer', b.transfer_id]].filter(([, v]) => typeof v === 'string' && v);
+
+  return el('article', { className: 'card case' },
+    el('div', { className: 'case-head' },
+      el('h2', { textContent: `${[...new Set(items.map((i) => i.reason))].join(', ')} · ${b.service_title ?? 'Booking'}` }),
+      tags,
+      since ? el('span', { className: 'waiting', textContent: `${open.length ? 'Reported' : 'Failed'} ${whenLabel(since)} · waiting ${waited(since)}` }) : null),
+    savedBanner,
+    el('div', { className: 'cols' },
+      pane('BOOKING',
+        el('span', {}, el('b', { textContent: b.service_title ?? 'Booking' }), ` · ${proName}`),
+        bookingWhen(b.start_at, b.end_at),
+        `Status: ${typeof b.status === 'string' ? b.status.replaceAll('_', ' ') : '—'}`,
+        cancelled),
+      pane('PEOPLE',
+        el('span', {}, el('b', { textContent: 'Pet parent: ' }), customerName, ' · ', mailLink(row.customer?.email)),
+        el('span', {}, el('b', { textContent: 'Pro: ' }), proName, ' · ', mailLink(row.pro?.email))),
+      el('div', { className: 'pane' },
+        el('span', { className: 'colhead', textContent: 'PAYMENT AND REFUNDS' }),
+        el('div', { className: 'money' },
+          ...money(b.payment_status === 'unpaid' ? 'Not paid' : `Paid by ${methodLabel(b.payment_method)}`, formatEuro(b.price_cents)),
+          ...money('Payment status', paymentStatusLabel(b.payment_status)),
+          ...money('Refunded so far', formatEuro(b.refunded_cents)),
+          ...money('Zoovo 20%', formatEuro(b.commission_cents)),
+          ...money('Pro’s share', formatEuro(b.payout_cents)),
+          ...money('Transfer', transferLabel(b.transfer_status)),
+          ...money('Payout due', whenLabel(b.payout_due_at))),
+        ...stripeIds.map(([label, value]) => el('span', {}, `${label}: `, el('span', { className: 'ids', textContent: value }))),
+        el('span', { className: 'colhead', textContent: 'REFUNDS' }),
+        ...(refunds.length ? refunds.map((r) => el('span', { className: r.failed ? 'error' : '' },
+          `${r.amount} · ${r.reason} · ${r.status} · ${r.when}`, r.note ? ` · “${r.note}”` : '')) : [none('No refunds yet.')])),
+      el('div', { className: 'pane report' },
+        el('span', { className: 'colhead', textContent: problems.length === 1 ? 'THE REPORT' : 'THE REPORTS' }),
+        ...(problems.length ? problems.map((p) => el('div', { className: 'problem' },
+          el('b', { textContent: `${p.kind}${p.open ? '' : ' (resolved)'}. ` }),
+          p.note ? `“${p.note}”` : none('No note.'),
+          el('div', { className: 'muted', textContent: `${p.who} (${p.role}) · ${p.when}${p.dispute ? ` · dispute: ${p.dispute}` : ''}` }),
+          p.resolution ? el('div', { textContent: `${p.resolution}${p.resolutionNote ? `: “${p.resolutionNote}”` : ''}` }) : null))
+          : [none('No problem is recorded for this booking.')]),
+        id ? chatPanel(row, id) : null)),
+    id ? caseActions(row, id) : null);
+}
+
+// "Show chat": admin_booking_messages, once per case until the next load, read only.
+const chatPainters = new Map(); // booking id -> repaints the chat on screen, if any
+
+function chatPanel(row, id) {
+  const slot = el('div', { className: 'chat' });
+  const toggle = el('button', { type: 'button', className: 'chip small', textContent: 'Show chat (read only)' });
+  toggle.setAttribute('aria-expanded', 'false');
+  const paint = () => {
+    const entry = caseChats.get(id);
+    const shown = entry?.open === true;
+    toggle.textContent = shown ? 'Hide chat' : 'Show chat (read only)';
+    toggle.setAttribute('aria-expanded', String(shown));
+    if (!shown) return slot.replaceChildren();
+    if (entry.status === 'loading') return slot.replaceChildren(none('Loading the chat…'));
+    if (entry.status === 'missing') {
+      return slot.replaceChildren(none('The chat view isn’t set up yet. Apply migrations 104 to 111 from the Zoovo-app/zoovo-app repo.'));
+    }
+    if (entry.status === 'error') return slot.replaceChildren(el('span', { className: 'error', textContent: `Couldn’t load the chat: ${entry.message}` }));
+    const lines = chatLines(entry.rows, row);
+    const log = el('div', { className: 'chatlog', tabIndex: 0 }, ...(lines.length ? lines.map((l) => el('div', { className: 'msg' },
+      el('b', { textContent: l.who }), el('span', { className: 'muted', textContent: ` · ${l.when}` }),
+      el('div', { className: l.muted ? 'muted' : '', textContent: l.text }))) : [none('No messages in this chat.')]));
+    log.setAttribute('role', 'region');
+    log.setAttribute('aria-label', 'Chat between the pet parent and the pro (read only)');
+    slot.replaceChildren(log, ...(entry.rows.length >= CHAT_LIMIT ? [none(`The latest ${CHAT_LIMIT} messages are shown.`)] : []));
+  };
+  chatPainters.set(id, paint);
+  toggle.onclick = async () => {
+    const known = caseChats.get(id);
+    // A failed fetch is tried again only when the chat is opened again.
+    if (known && (known.status !== 'error' || known.open)) { known.open = !known.open; return paint(); }
+    const seq = loadSeq;
+    caseChats.set(id, { status: 'loading', open: true });
+    paint();
+    let answer;
+    try {
+      answer = await sb.rpc('admin_booking_messages', { p_booking_id: id, p_limit: CHAT_LIMIT });
+    } catch (e) {
+      answer = { data: null, error: { message: e?.message ?? 'network error' } };
+    }
+    if (seq !== loadSeq) return; // a newer load() has cleared the cache
+    const { data, error } = answer;
+    const open = caseChats.get(id)?.open !== false;
+    caseChats.set(id, !error ? { status: 'ok', open, rows: Array.isArray(data) ? data : [] }
+      : error.code === 'PGRST202' ? { status: 'missing', open }
+        : { status: 'error', open, message: error.message });
+    chatPainters.get(id)?.();
+  };
+  paint();
+  return el('div', { className: 'pane-chat' }, toggle, slot);
+}
+
+// The decisions, the reversal and the retries of one case.
+function caseActions(row, id) {
+  const b = row.booking ?? {};
+  const allowed = allowedDecisions(row);
+  const jobs = failedJobs(row);
+  const canReverse = b.transfer_status === 'sent';
+  const moneyFailed = row.attention === 'refund_failed' || row.attention === 'transfer_failed';
+  if (!allowed.length && !canReverse && !jobs.length && !moneyFailed) return null;
+
+  const busy = busyCases.has(id); // a request for this case is still on its way
+  const left = refundableCents(row) ?? 0;
+  const box = el('div', { className: 'actions sep' });
+  const formError = el('p', { className: 'error' });
+  formError.setAttribute('role', 'alert');
+  const status = el('p', { className: 'muted' });
+  status.setAttribute('role', 'status');
+  if (busy) status.textContent = 'Saving… please wait. Don’t close this page.';
+
+  const note = el('textarea', { rows: 3, maxLength: 1000, disabled: busy });
+  const optionRow = (className, ...children) => el('div', { className: `option ${className}`.trim() }, ...children);
+  const hint = (text) => el('span', { className: 'hint', textContent: text });
+
+  // Sends one action. The card locks first (act), so a second click can't
+  // send a second request, and the case stays locked until the answer is in.
+  const go = (fn, args, button, kind) => {
+    if (busyCases.has(id)) return;
+    busyCases.add(id);
+    status.textContent = 'Saving… please wait. Don’t close this page.';
+    act(fn, args, button, (result) => finishCaseAction(id, kind, result));
+  };
+  // The note first: it is the top of the form.
+  const refuse = (message, field) => { formError.textContent = message; field?.focus(); };
+
+  if (allowed.length || canReverse) {
+    box.append(el('label', {}, 'Note (required, saved with the action)', note),
+      el('span', { className: 'muted', textContent: 'Both the pet parent and the pro are notified when you decide.' }),
+      formError);
+  }
+  if (allowed.length) {
+    box.append(el('span', { className: 'decision-title', textContent: 'Decision' }));
+    if (allowed.includes('withhold')) {
+      box.append(el('span', { className: 'muted', textContent: 'This case has a card dispute. A disputed charge can’t be refunded here, so you can only release or withhold the payout.' }));
+    }
+  }
+
+  const amount = el('input', { type: 'text', inputMode: 'decimal', autocomplete: 'off', disabled: busy });
+  amount.setAttribute('aria-label', 'Refund amount in euros');
+
+  const decide = (decision, button) => {
+    if (busyCases.has(id)) return;
+    const cents = decision === 'partial_refund' ? parseEuroToCents(amount.value) : null;
+    const problem = validateDecision(row, decision, cents, note.value);
+    if (problem) return refuse(problem, validateNote(note.value) ? note : amount);
+    formError.textContent = '';
+    if (!confirm(confirmText(row, decision, cents))) return;
+    go('admin_resolve_booking_problems',
+      { p_booking_id: id, p_decision: decision, p_refund_cents: cents, p_note: note.value.trim() }, button, 'decision');
+  };
+  const payoutText = b.payout_cents > 0 ? ` · ${formatEuro(b.payout_cents)}` : '';
+  const options = {
+    full_refund: () => {
+      const button = el('button', { type: 'button', className: 'btn secondary', textContent: `Refund in full · ${formatEuro(left)}`, disabled: busy });
+      button.onclick = () => decide('full_refund', button);
+      return optionRow('', button, hint(decisionPreview(row, 'full_refund', null) || 'Nothing is left to refund.'));
+    },
+    partial_refund: () => {
+      const suggestion = suggestedRefund(row);
+      if (suggestion) amount.value = centsToInput(suggestion);
+      const button = el('button', { type: 'button', className: 'btn', textContent: 'Refund part', disabled: busy });
+      button.onclick = () => decide('partial_refund', button);
+      const preview = hint('');
+      const update = () => {
+        const cents = parseEuroToCents(amount.value);
+        const text = cents === null ? '' : decisionPreview(row, 'partial_refund', cents);
+        preview.textContent = text || (amount.value.trim()
+          ? `Enter a refund from €0.01 to ${formatEuro(left)}, like 7 or 7,50.`
+          : `Enter the amount to refund, up to ${formatEuro(left)}.`);
+      };
+      amount.oninput = update;
+      update();
+      const field = el('label', { className: 'amount-label' }, 'Amount ',
+        el('span', { className: 'amount' }, el('span', { className: 'muted', textContent: '€' }), amount));
+      return optionRow(suggestion ? 'suggested' : '', button, field, preview,
+        suggestion ? el('span', { className: 'muted wide', textContent: `Suggested ${formatEuro(suggestion)}: the cancellation policy applied at the start time, minus what was already refunded.` }) : null);
+    },
+    release: () => {
+      // A payout that was already sent can't be released any more: the decision only closes the case.
+      const label = b.transfer_status === 'sent' ? 'Release (keep the payout)' : `Release payout${payoutText}`;
+      const button = el('button', { type: 'button', className: 'btn navy', textContent: label, disabled: busy });
+      button.onclick = () => decide('release', button);
+      return optionRow('', button, hint(decisionPreview(row, 'release', null)));
+    },
+    withhold: () => {
+      const button = el('button', { type: 'button', className: 'btn secondary', textContent: `Withhold payout${payoutText}`, disabled: busy });
+      button.onclick = () => decide('withhold', button);
+      return optionRow('', button, hint(decisionPreview(row, 'withhold', null)));
+    },
+  };
+  for (const decision of allowed) box.append(options[decision]());
+
+  if (canReverse) {
+    const reverse = el('button', { type: 'button', className: 'btn secondary', textContent: `Reverse transfer · ${formatEuro(b.payout_cents)}`, disabled: busy });
+    reverse.onclick = () => {
+      const problem = validateNote(note.value);
+      if (problem) return refuse(problem, note);
+      formError.textContent = '';
+      if (!confirm(reverseConfirmText(row))) return;
+      go('admin_reverse_transfer', { p_booking_id: id, p_note: note.value.trim() }, reverse, 'reversal');
+    };
+    box.append(optionRow('', reverse, hint('Takes the money back from the pro’s Stripe account. Uses the note above.')));
+  }
+
+  for (const job of jobs) {
+    const retry = el('button', { type: 'button', className: 'btn navy', textContent: `Retry the ${job.label}`, disabled: busy });
+    retry.onclick = () => {
+      if (!confirm(retryConfirmText(job))) return;
+      formError.textContent = '';
+      go('admin_retry_payment_job', { p_job_id: job.id }, retry, 'retry');
+    };
+    box.append(optionRow('', retry, hint(job.error ? `Failed with: ${job.error}` : 'This job failed. Retrying sends it again with the same key.')));
+  }
+  if (moneyFailed && !jobs.length) {
+    box.append(el('span', { className: 'muted', textContent: 'A refund or transfer failed, but the database did not say which job, so it can’t be retried from here.' }));
+  }
+
+  box.append(status);
+  return box;
+}
+
+// What to do with the answer to an action. A success shows the row the
+// database sent back; an error, or an answer that isn't a case, reloads the
+// list so the card shows what is true now.
+async function finishCaseAction(id, kind, { data, error }) {
+  busyCases.delete(id);
+  const here = activeTab === 'problems';
+  if (error) {
+    const text = saveErrorText(error);
+    if (!here) alert(text); // the reviewer has moved to another tab: don't lose the message
+    else {
+      problemNotice = { kind: 'bad', text: `${text} The list was reloaded; check the case before trying again.` };
+      keepNotice = true;
+    }
+    return load();
+  }
+  const updated = asCaseRow(data, id);
+  if (here && updated && rows.some((r) => caseId(r) === id)) {
+    rows = rows.map((r) => (caseId(r) === id ? updated : r));
+    savedCases.set(id, kind);
+    counts.problems = openCount();
+    renderTabs();
+    return renderList();
+  }
+  if (here) {
+    problemNotice = kind === 'decision'
+      ? { kind: 'bad', text: 'The server answered with something unexpected. The list was reloaded; check the case before trying again.' }
+      : { kind: 'ok', text: kind === 'reversal'
+        ? 'Reversal requested. The list was reloaded; the transfer status shows where it stands.'
+        : 'Retry queued. The list was reloaded; refresh in a minute to see whether it worked.' };
+    keepNotice = true;
+  }
+  return load();
 }
 
 // ---------------------------------------------------------------------------
@@ -1338,11 +1809,20 @@ function serviceActions(r, queue, title) {
   return controls.children.length ? controls : null;
 }
 
-async function act(fn, args, button) {
+// `handle` takes over from the default (alert on error, then reload) and gets
+// {data, error}; the card stays locked until it renders something else.
+async function act(fn, args, button, handle) {
   // Lock every control on the card so approve and reject can't both be sent.
-  const controls = [...button.closest('article').querySelectorAll('button, select, textarea')];
+  const controls = [...button.closest('article').querySelectorAll('button, select, textarea, input')];
   for (const c of controls) c.disabled = true;
-  const { error } = await sb.rpc(fn, args);
+  let result;
+  try {
+    result = await sb.rpc(fn, args);
+  } catch (e) {
+    result = { data: null, error: { message: e?.message ?? 'network error' } };
+  }
+  if (handle) return handle(result);
+  const { error } = result;
   // Reload either way: after an error the card may be stale (e.g. another
   // reviewer already decided), so it must not stay live.
   if (error) alert(`Couldn't save: ${error.message}`);
@@ -1387,6 +1867,11 @@ $('signout').onclick = async () => {
   expandedPros.clear();
   cancellations.clear();
   cancellationSlots.clear();
+  selectedCase = null;
+  problemNotice = null;
+  savedCases.clear();
+  caseChats.clear();
+  chatPainters.clear();
   counts = {};
   exact = new Set();
   activeTab = 'apps';
