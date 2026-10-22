@@ -1,10 +1,10 @@
-// Run with: node --test review/
+// Run with: node --test review/*.test.mjs
 // Only the pure helpers are tested; the page itself needs a browser.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   kvkUrl, verificationBadges, stateText, formatEuro, cancelRate, durationLabel,
-  reasonLabel, reasonCounts, stripeTypeNote, sortPros,
+  reasonLabel, reasonCounts, stripeTypeNote, sortPros, cancellationRows, proSubline,
 } from './lib.js';
 
 // verification as admin_list_pro_applications and admin_list_pros return it:
@@ -131,6 +131,10 @@ test('reason_labels', () => {
   assert.equal(reasonLabel(''), 'No reason given');
   // A key this page doesn't know is shown as it is, never hidden.
   assert.equal(reasonLabel('hold_expired'), 'hold_expired');
+  // Only the app's own keys count: names every object has are just unknown keys.
+  for (const key of ['constructor', 'toString', '__proto__', 'hasOwnProperty']) {
+    assert.equal(reasonLabel(key), key);
+  }
 });
 
 test('reason_counts', () => {
@@ -199,4 +203,57 @@ test('sort_pros', () => {
   const tie = [row('B', { pro_cancels_90d: 1, pro_cancel_rate_90d: 0.1 }), row('A', { pro_cancels_90d: 2, pro_cancel_rate_90d: 0.1 })];
   assert.deepEqual(sortPros(tie, 'rate').map((p) => p.display_name), ['A', 'B']);
   assert.deepEqual(sortPros(null, 'rate'), []);
+});
+
+test('cancellation_rows', () => {
+  // admin_pro_cancellations rows. 2026-10-04 is a Sunday and Amsterdam is on
+  // summer time (UTC+2) until 25 October, then on UTC+1.
+  const base = {
+    booking_id: 'b1', cancelled_at: '2026-10-04T10:15:00Z', service_title: 'Dog walking, 45 min',
+    start_at: '2026-10-05T07:00:00Z', end_at: '2026-10-05T07:45:00Z', reason: 'not_available',
+    note: 'Double-booked myself, sorry.', refunded_cents: 2090,
+  };
+  assert.deepEqual(cancellationRows([base]), [{
+    id: 'b1', cancelledOn: 'Sun 4 Oct', booking: 'Dog walking, 45 min · Mon 5 Oct, 09:00',
+    reason: 'Not available any more', note: '“Double-booked myself, sorry.”', refunded: '€20.90',
+  }]);
+
+  const one = (over) => cancellationRows([{ ...base, ...over }])[0];
+  // Days and times are Amsterdam's, not UTC's: 22:30 UTC is already Monday there.
+  assert.equal(one({ cancelled_at: '2026-10-04T22:30:00Z' }).cancelledOn, 'Mon 5 Oct');
+  assert.equal(one({ start_at: '2026-10-26T08:00:00Z' }).booking, 'Dog walking, 45 min · Mon 26 Oct, 09:00'); // winter time
+  assert.equal(one({ start_at: '2026-10-04T22:05:00Z' }).booking, 'Dog walking, 45 min · Mon 5 Oct, 00:05');
+  assert.equal(one({ cancelled_at: '2026-09-13T09:00:00Z' }).cancelledOn, 'Sun 13 Sep');
+
+  // Note: quoted, or null for the page's "No note".
+  assert.equal(one({ note: '  Car broke down.  ' }).note, '“Car broke down.”');
+  for (const none of [null, undefined, '', '   ', 7]) assert.equal(one({ note: none }).note, null);
+  // Whole euros, or not a number.
+  assert.equal(one({ refunded_cents: 1900 }).refunded, '€19');
+  assert.equal(one({ refunded_cents: 0 }).refunded, '€0');
+  assert.equal(one({ refunded_cents: null }).refunded, '—');
+  // Reasons use the app's words; no reason at all is said so.
+  assert.equal(one({ reason: 'emergency' }).reason, 'Emergency');
+  assert.equal(one({ reason: null }).reason, 'No reason given');
+  // Bad or missing dates and titles never throw and never print "Invalid Date".
+  assert.equal(one({ cancelled_at: 'nope' }).cancelledOn, '—');
+  assert.equal(one({ cancelled_at: null }).cancelledOn, '—');
+  assert.equal(one({ start_at: null }).booking, 'Dog walking, 45 min');
+  assert.equal(one({ service_title: null }).booking, 'Mon 5 Oct, 09:00');
+  assert.equal(one({ service_title: null, start_at: null }).booking, '—');
+  // Order is kept (the server sends the newest first); rows that aren't objects are dropped.
+  assert.deepEqual(cancellationRows([{ ...base, booking_id: 'x' }, null, 'y', { ...base, booking_id: 'z' }]).map((r) => r.id), ['x', 'z']);
+  for (const none of [null, undefined, {}, 'x']) assert.deepEqual(cancellationRows(none), []);
+});
+
+test('pro_subline', () => {
+  // The city goes under the name; the email only when there is no city.
+  assert.equal(proSubline({ city: 'Utrecht', email: 'bram@example.com' }), 'Utrecht');
+  assert.equal(proSubline({ city: ' Utrecht ', email: 'bram@example.com' }), 'Utrecht');
+  for (const noCity of [null, undefined, '', '   ']) {
+    assert.equal(proSubline({ city: noCity, email: 'bram@example.com' }), 'bram@example.com');
+  }
+  assert.equal(proSubline({ city: null, email: null }), null);
+  assert.equal(proSubline({}), null);
+  assert.equal(proSubline(null), null);
 });

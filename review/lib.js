@@ -107,7 +107,10 @@ const NO_REASON = 'No reason given';
 // picking a reason. A key this page doesn't know is shown as it is.
 export function reasonLabel(key) {
   if (typeof key !== 'string' || key === '' || key === 'customer') return NO_REASON;
-  return PRO_REASONS[key] ?? CUSTOMER_REASONS[key] ?? key;
+  // hasOwn: 'constructor' and the like are not reasons, even though every object has them.
+  if (Object.hasOwn(PRO_REASONS, key)) return PRO_REASONS[key];
+  if (Object.hasOwn(CUSTOMER_REASONS, key)) return CUSTOMER_REASONS[key];
+  return key;
 }
 
 // cancel_reasons_90d ({reason: count}) as [{key, label, count}]: the most
@@ -171,4 +174,62 @@ const SORTERS = {
 export function sortPros(pros, key) {
   if (!Array.isArray(pros)) return [];
   return [...pros].sort(Object.hasOwn(SORTERS, key) ? SORTERS[key] : SORTERS.rate);
+}
+
+// The name's second line: the city, or the email when the city is unknown.
+export function proSubline(pro) {
+  const text = (v) => (typeof v === 'string' && v.trim() ? v.trim() : null);
+  return text(pro?.city) ?? text(pro?.email);
+}
+
+// ---------------------------------------------------------------------------
+// A pro's cancellations (admin_pro_cancellations)
+// ---------------------------------------------------------------------------
+
+// Days and times are Amsterdam wall-clock, as in the app. en-US gives short
+// names without the stray comma or "Sept" that en-GB has.
+const DAY_FORMAT = new Intl.DateTimeFormat('en-US', {
+  timeZone: 'Europe/Amsterdam', weekday: 'short', day: 'numeric', month: 'short',
+});
+const TIME_FORMAT = new Intl.DateTimeFormat('en-US', {
+  timeZone: 'Europe/Amsterdam', hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+});
+
+function amsterdam(format, iso) {
+  if (typeof iso !== 'string') return null;
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return null;
+  return Object.fromEntries(format.formatToParts(date).map(({ type, value }) => [type, value]));
+}
+
+// "Mon 5 Oct", or null for something that isn't a date.
+function dayLabel(iso) {
+  const p = amsterdam(DAY_FORMAT, iso);
+  return p ? `${p.weekday} ${p.day} ${p.month}` : null;
+}
+
+// "Mon 5 Oct, 09:00".
+function dayTimeLabel(iso) {
+  const day = dayLabel(iso);
+  const time = amsterdam(TIME_FORMAT, iso);
+  return day && time ? `${day}, ${time.hour}:${time.minute}` : null;
+}
+
+// admin_pro_cancellations rows ({booking_id, cancelled_at, service_title,
+// start_at, end_at, reason, note, refunded_cents}, newest first) as the
+// strings the table shows. `note` is quoted, or null for "No note".
+export function cancellationRows(rows) {
+  if (!Array.isArray(rows)) return [];
+  return rows.filter((r) => r && typeof r === 'object' && !Array.isArray(r)).map((r) => {
+    const note = typeof r.note === 'string' ? r.note.trim() : '';
+    const title = typeof r.service_title === 'string' && r.service_title.trim() ? r.service_title.trim() : null;
+    return {
+      id: r.booking_id,
+      cancelledOn: dayLabel(r.cancelled_at) ?? '—',
+      booking: [title, dayTimeLabel(r.start_at)].filter(Boolean).join(' · ') || '—',
+      reason: reasonLabel(r.reason),
+      note: note ? `“${note}”` : null,
+      refunded: formatEuro(r.refunded_cents),
+    };
+  });
 }

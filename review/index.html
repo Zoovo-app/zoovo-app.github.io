@@ -89,6 +89,7 @@ table.pros{width:100%;min-width:980px;border-collapse:collapse;font-size:14px}
 .pros td{padding:12px 16px;vertical-align:top;border-bottom:1px solid var(--line)}
 .pros tbody tr:last-child>td{border-bottom:0}
 .pros .num{text-align:right;white-space:nowrap}
+.pros .nowrap{white-space:nowrap}
 .pros .good{color:#1d6b3a;font-weight:700;white-space:nowrap}
 .pros .amber{color:#8a5a00;font-weight:700}
 .pros .name{font-weight:700;overflow-wrap:anywhere}
@@ -104,6 +105,13 @@ table.pros{width:100%;min-width:980px;border-collapse:collapse;font-size:14px}
 .reasons{display:flex;flex-direction:column;gap:10px;background:#fff;border:1px solid #f2d58a;border-radius:12px;padding:14px 16px}
 .reasons .tags{align-items:center;margin:0}
 .reasons b{color:var(--navy);margin-right:6px}
+.subwrap{overflow-x:auto}
+.pros table.sub{width:100%;border-collapse:collapse;font-size:14px}
+.pros .sub th{padding:6px 8px;font-size:12px;border-bottom:1px solid #eef2f6}
+.pros .sub td{padding:6px 8px;border-bottom:1px solid #eef2f6}
+.pros .sub th:first-child,.pros .sub td:first-child{padding-left:0}
+.pros .sub th:last-child,.pros .sub td:last-child{padding-right:0}
+.pros .sub tbody tr:last-child>td{border-bottom:0}
 .sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
 @media (max-width:600px){.app{grid-template-columns:1fr}dl{grid-template-columns:1fr}.colheads{display:none}.box[data-col]::before{content:attr(data-col);display:block;margin-bottom:4px;font-size:11px;font-weight:700;letter-spacing:1px;color:var(--muted)}}
 </style></head>
@@ -145,8 +153,8 @@ table.pros{width:100%;min-width:980px;border-collapse:collapse;font-size:14px}
 <script type="module">
 import { supabaseClient } from '/assets/supabase.js';
 import {
-  PRO_SORTS, cancelRate, durationLabel, formatEuro, kvkUrl, reasonCounts, sortPros,
-  stateText, stripeTypeNote, verificationBadges,
+  PRO_SORTS, cancelRate, cancellationRows, durationLabel, formatEuro, kvkUrl, proSubline,
+  reasonCounts, sortPros, stateText, stripeTypeNote, verificationBadges,
 } from '/review/lib.js';
 
 // Applicants choose their avatar URL (the database only checks for https), so
@@ -407,6 +415,17 @@ let filter = 'pending';
 let rows = [];
 let prosSort = PRO_SORTS[0][0]; // the Pros tab's order
 const expandedPros = new Set(); // ids of the pros whose cancellation reasons are open
+// The sort control and the table exist only after a successful load, so a
+// setup or error message is never drawn over.
+let prosLoaded = false;
+// A pro's cancellations, fetched once when the row is first opened and kept
+// until the next load: pro id -> {status: 'loading'|'ok'|'error', rows, message}.
+const cancellations = new Map();
+const cancellationSlots = new Map(); // pro id -> the element on screen that shows them
+// Set once the API says admin_pro_cancellations doesn't exist: the opened row
+// then shows only the reason counts.
+let cancellationsMissing = false;
+const CANCELLATIONS_LIMIT = 20;
 let counts = {}; // tab -> number waiting; unset or null while unknown
 // Tabs whose number is the true count (from the last answer of
 // admin_service_queue_counts). The others come from a list, which stops at 200
@@ -456,6 +475,7 @@ async function route() {
 let loadSeq = 0;
 async function load() {
   const seq = ++loadSeq;
+  prosLoaded = false;
   renderTabs();
   renderFilters();
   $('listMsg').textContent = 'Loading…';
@@ -501,6 +521,8 @@ async function loadServices(seq) {
 
 async function loadPros(seq) {
   rows = []; // the sort control must never redraw another tab's rows
+  cancellations.clear();
+  cancellationSlots.clear();
   const { data, error } = await sb.rpc('admin_list_pros');
   if (seq !== loadSeq) return;
   if (error) {
@@ -511,6 +533,8 @@ async function loadPros(seq) {
     return;
   }
   rows = data ?? [];
+  prosLoaded = true;
+  renderFilters(); // the sort control appears now
   renderList();
 }
 
@@ -601,8 +625,10 @@ function renderTabs() {
 function renderFilters() {
   const filters = $('filters');
   filters.replaceChildren();
-  filters.hidden = activeTab !== 'apps' && activeTab !== 'pros'; // the status filters are the applications'
+  // The status filters are the applications'; the Pros tab has its sort once loaded.
+  filters.hidden = !(activeTab === 'apps' || (activeTab === 'pros' && prosLoaded));
   if (activeTab === 'pros') {
+    if (!prosLoaded) return;
     const sort = el('select', {}, ...PRO_SORTS.map(([value, label]) => el('option', { value, textContent: label })));
     sort.value = prosSort;
     sort.onchange = () => { prosSort = sort.value; renderList(); };
@@ -759,6 +785,7 @@ const PRO_ORDER_TEXT = {
 };
 
 function renderPros(capped) {
+  if (!prosLoaded) return; // still loading, or the message above is the answer
   const n = rows.length;
   $('listMsg').textContent = n
     ? `${n} ${n === 1 ? 'pro' : 'pros'} · ${PRO_ORDER_TEXT[prosSort] ?? PRO_ORDER_TEXT.rate}${capped}`
@@ -794,6 +821,62 @@ function badgeCell(badge, hint) {
     ...(hint ? [el('br'), none(hint)] : []));
 }
 
+// What the opened row shows under the reason counts: the cancellations.
+function renderCancellations(slot, entry) {
+  if (!entry) return slot.replaceChildren(); // not asked for yet, or the API has no such function
+  if (entry.status === 'loading') return slot.replaceChildren(none('Loading the cancellations…'));
+  if (entry.status === 'error') {
+    return slot.replaceChildren(el('span', { className: 'error', textContent: `Couldn't load the cancellations: ${entry.message}` }));
+  }
+  const list = cancellationRows(entry.rows);
+  if (!list.length) return slot.replaceChildren();
+  const th = (text, className = '') => el('th', { scope: 'col', textContent: text, className });
+  const table = el('table', { className: 'sub' },
+    el('thead', {}, el('tr', {},
+      th('Cancelled on'), th('Booking'), th('Reason'), th('Note to the customer'), th('Refunded', 'num'))),
+    el('tbody', {}, ...list.map((c) => el('tr', {},
+      el('td', { className: 'nowrap', textContent: c.cancelledOn }),
+      el('td', { textContent: c.booking }),
+      el('td', { textContent: c.reason }),
+      el('td', {}, c.note ?? none('No note')),
+      el('td', { className: 'num', textContent: c.refunded })))));
+  return slot.replaceChildren(...[table,
+    entry.rows.length >= CANCELLATIONS_LIMIT ? none(`The latest ${CANCELLATIONS_LIMIT} are shown.`) : null].filter(Boolean));
+}
+
+// admin_pro_cancellations once per pro (until the next load), when the row is
+// opened. Without that function the row keeps showing only the reason counts.
+// A failed fetch is tried again only when the reviewer opens the row again.
+async function loadCancellations(id, retry = false) {
+  if (cancellationsMissing || typeof id !== 'string') return;
+  const known = cancellations.get(id);
+  if (known && !(retry && known.status === 'error')) return; // loading, here, or failed
+  const paint = () => {
+    const slot = cancellationSlots.get(id);
+    if (slot?.isConnected) renderCancellations(slot, cancellations.get(id));
+  };
+  const seq = loadSeq;
+  cancellations.set(id, { status: 'loading' });
+  paint();
+  let answer;
+  try {
+    answer = await sb.rpc('admin_pro_cancellations', { p_pro: id, p_limit: CANCELLATIONS_LIMIT });
+  } catch (e) {
+    answer = { data: null, error: { message: e?.message ?? 'network error' } };
+  }
+  if (seq !== loadSeq) return; // a newer load() has cleared the cache
+  const { data, error } = answer;
+  if (error?.code === 'PGRST202') {
+    cancellationsMissing = true;
+    cancellations.delete(id);
+  } else if (error) {
+    cancellations.set(id, { status: 'error', message: error.message });
+  } else {
+    cancellations.set(id, { status: 'ok', rows: Array.isArray(data) ? data : [] });
+  }
+  paint();
+}
+
 // A pro's row, and under it (hidden until opened) the reasons for the
 // cancellations. Only a pro with cancellations in the last 90 days has them.
 function proRows(p) {
@@ -810,11 +893,12 @@ function proRows(p) {
     : el('td', {}, `${whole(p.problems_open)} open`, el('span', { className: 'muted', textContent: ` of ${whole(p.problems_total)}` }));
   const kvk = p.is_business && typeof p.kvk === 'string' && p.kvk.trim() ? p.kvk : null;
   const stripeNote = stripeTypeNote(p.is_business, p.verification?.business_type);
+  const subline = proSubline(p); // the city, else the email
 
   const row = el('tr', { className: open ? 'open' : '' },
     el('td', {},
       el('div', { className: 'name', textContent: name }),
-      p.email ? el('div', { className: 'muted', textContent: p.email }) : null,
+      subline ? el('div', { className: 'muted', textContent: subline }) : null,
       el('div', { className: 'tags' }, el('span', { className: status, textContent: p.status ?? 'unknown' }))),
     el('td', { className: 'num', textContent: `${whole(p.bookings_90d)} / ${whole(p.bookings_total)}` }),
     whole(p.bookings_total) === 0
@@ -826,11 +910,14 @@ function proRows(p) {
     el('td', {},
       p.is_business ? 'Business' : 'Private',
       kvk ? el('br') : null,
-      kvk ? (kvkUrl(kvk) ? kvkLink(kvk, kvkUrl(kvk), 'small') : none(`KvK ${kvk}`)) : null,
+      // Like the applications card: only a real KvK number links; any other stays plain.
+      kvk ? (kvkUrl(kvk) ? kvkLink(kvk, kvkUrl(kvk), 'small') : none(`Reg. no. ${kvk.trim()}`)) : null,
       stripeNote ? el('div', { className: 'tags' }, el('span', { className: 'tag warn', textContent: stripeNote })) : null),
     el('td'));
   if (!canOpen) return [row];
 
+  // Under the reason counts: the cancellations themselves, once fetched.
+  const slot = el('div', { className: 'subwrap' });
   const detail = el('tr', { id: `reasons-${p.id}`, className: open ? 'open' : '', hidden: !open },
     el('td', { colSpan: 8, className: 'detail' }, el('div', { className: 'reasons' },
       el('div', { className: 'tags' },
@@ -838,11 +925,18 @@ function proRows(p) {
         ...(reasons.length
           ? reasons.map((r) => el('span', { className: 'tag', textContent: `${r.label} × ${r.count}` }))
           : [none('No reasons recorded')])),
+      slot,
       none('Each one was refunded in full to the customer, and the pro was paid nothing for them.'))));
-  const toggle = el('button', { type: 'button', className: 'chip small', textContent: open ? 'Hide reasons' : 'Reasons' });
+  cancellationSlots.set(p.id, slot);
+  renderCancellations(slot, cancellations.get(p.id));
+  if (open) loadCancellations(p.id); // opened before a reload: fetch again
+
+  // The label starts with the visible words, so voice control can say them.
+  const toggleText = (isOpen) => (isOpen ? 'Hide reasons' : 'Reasons');
+  const toggle = el('button', { type: 'button', className: 'chip small', textContent: toggleText(open) });
   toggle.setAttribute('aria-expanded', String(open));
   toggle.setAttribute('aria-controls', detail.id);
-  toggle.setAttribute('aria-label', `Cancellation reasons for ${name}`);
+  toggle.setAttribute('aria-label', `${toggleText(open)} for ${name}`);
   toggle.onclick = () => {
     const show = detail.hidden;
     if (show) expandedPros.add(p.id);
@@ -850,8 +944,10 @@ function proRows(p) {
     detail.hidden = !show;
     row.classList.toggle('open', show);
     detail.classList.toggle('open', show);
-    toggle.textContent = show ? 'Hide reasons' : 'Reasons';
+    toggle.textContent = toggleText(show);
     toggle.setAttribute('aria-expanded', String(show));
+    toggle.setAttribute('aria-label', `${toggleText(show)} for ${name}`);
+    if (show) loadCancellations(p.id, true);
   };
   row.lastElementChild.append(toggle);
   return [row, detail];
@@ -1287,7 +1383,10 @@ $('signout').onclick = async () => {
   await sb.auth.signOut();
   loadSeq++; // a load() still in flight must not render into the cleared list
   rows = [];
+  prosLoaded = false;
   expandedPros.clear();
+  cancellations.clear();
+  cancellationSlots.clear();
   counts = {};
   exact = new Set();
   activeTab = 'apps';
