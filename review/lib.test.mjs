@@ -10,7 +10,7 @@ import {
   caseItems, waitingSince, bookingWhen, whenLabel, cancellationText, decisionPreview,
   confirmText, reverseConfirmText, retryConfirmText, problemDetails, refundRows, savedText,
   chatLines, asCaseRow, saveErrorText, problemKindLabel, transferLabel, methodLabel,
-  paymentStatusLabel, disputeStatusLabel, resolutionText,
+  paymentStatusLabel, disputeStatusLabel, resolutionText, createRequestTracker,
 } from './lib.js';
 
 // verification as admin_list_pro_applications and admin_list_pros return it:
@@ -547,8 +547,16 @@ test('cancellation_text', () => {
   // The system (cancelled_by null) says so, and has no reason line unless it stored one.
   assert.equal(cancellationText(cancelled({ cancelled_by: null, cancel_reason: null, cancel_note: null })),
     'Cancelled automatically on Sun 4 Oct, 12:15');
-  assert.equal(cancellationText(cancelled({ cancelled_by: null, cancel_reason: 'slot_taken', cancel_note: null })),
-    'Cancelled automatically on Sun 4 Oct, 12:15 · Reason: slot_taken');
+  const system = (reason) => cancellationText(cancelled({ cancelled_by: null, cancel_reason: reason, cancel_note: null }));
+  assert.equal(system('slot_taken'), 'Cancelled automatically on Sun 4 Oct, 12:15 · Reason: Time no longer available');
+  // The reasons the database gives for cancelling by itself, in words.
+  assert.equal(system('pro_suspended'), 'Cancelled automatically on Sun 4 Oct, 12:15 · Reason: Pro suspended');
+  assert.equal(system('account_deleted'), 'Cancelled automatically on Sun 4 Oct, 12:15 · Reason: Account deleted');
+  assert.equal(system('hold_expired'), 'Cancelled automatically on Sun 4 Oct, 12:15 · Reason: Payment not completed in time');
+  assert.equal(system('payment_cancelled'), 'Cancelled automatically on Sun 4 Oct, 12:15 · Reason: Payment cancelled');
+  assert.equal(system('payment_mismatch'), 'Cancelled automatically on Sun 4 Oct, 12:15 · Reason: Payment amount mismatch');
+  assert.equal(system('something_new'), 'Cancelled automatically on Sun 4 Oct, 12:15 · Reason: something_new'); // unknown: as it is
+  assert.equal(system('constructor'), 'Cancelled automatically on Sun 4 Oct, 12:15 · Reason: constructor');
   assert.equal(cancellationText(cancelled({ cancelled_at: null })), 'Cancelled by the pro · Reason: I’m ill · “Flu, sorry.”');
   for (const notCancelled of [{ status: 'completed' }, { status: 'confirmed', cancelled_by: 'pro' }, null, undefined]) {
     assert.equal(cancellationText(notCancelled), null);
@@ -632,7 +640,15 @@ test('decision_texts_name_the_amount', () => {
   assert.equal(decisionPreview(row, 'partial_refund', 2301), '');
   assert.equal(decisionPreview(row, 'partial_refund', null), '');
   // Release and withhold name the payout.
-  assert.equal(decisionPreview(row, 'release', null), 'No refund. Happy Paws Walking is paid €18.40 at the next payout run.');
+  // The payout is due Fri 9 Oct, 17:00 Amsterdam. Before that it waits for the date; after it, for the next payout run.
+  const beforeDue = Date.parse('2026-10-08T12:00:00Z');
+  const afterDue = Date.parse('2026-10-10T12:00:00Z');
+  assert.equal(decisionPreview(row, 'release', null, beforeDue), 'No refund. Happy Paws Walking is paid €18.40 once it is due (Fri 9 Oct, 17:00).');
+  assert.equal(decisionPreview(row, 'release', null, afterDue), 'No refund. Happy Paws Walking is paid €18.40 at the next payout run.');
+  assert.equal(decisionPreview(row, 'release', null, Date.parse('2026-10-09T15:00:00Z')), 'No refund. Happy Paws Walking is paid €18.40 at the next payout run.'); // due now
+  for (const noDate of [null, 'nope', undefined]) {
+    assert.match(decisionPreview(caseRow({}, { payout_due_at: noDate }), 'release', null, beforeDue), /at the next payout run/);
+  }
   assert.match(confirmText(row, 'release', null), /^Release the payout of €18\.40 to Happy Paws Walking/);
   assert.equal(decisionPreview(row, 'withhold', null), 'No refund. Happy Paws Walking is not paid €18.40 for this booking.');
   assert.match(confirmText(row, 'withhold', null), /^Withhold the payout of €18\.40 from Happy Paws Walking\?/);
@@ -655,29 +671,62 @@ test('decision_texts_name_the_amount', () => {
   assert.match(retryConfirmText({ kind: 'refund', label: 'refund' }), /^Retry the failed refund\?/);
 });
 
-test('saved_text_comes_from_the_returned_row', () => {
-  const resolved = caseRow({
-    problems: [{ ...wentWrong, status: 'resolved', resolution: 'partial_refund', resolution_cents: 1150, resolution_note: NOTE }],
-    refunds: [{ amount_cents: 1150, reason: 'team', status: 'requested', created_at: '2026-10-10T08:00:00Z', note: NOTE }],
-    attention: null,
+test('saved_text_names_the_decision_just_made', () => {
+  const resolved = (over) => ({ ...wentWrong, status: 'resolved', resolution_note: NOTE, ...over });
+  const team = (amount, status) => ({ amount_cents: amount, reason: 'team', status, created_at: '2026-10-10T08:00:00Z', note: NOTE });
+  const sent = (decision, ...ids) => ({ decision, ids });
+
+  const partial = caseRow({
+    problems: [resolved({ resolution: 'partial_refund', resolution_cents: 1150 })],
+    refunds: [team(1150, 'requested')], attention: null,
   }, { refunded_cents: 1150, payout_cents: 920, commission_cents: 230 });
-  assert.equal(savedText(resolved), 'Decision saved: Refunded €11.50. The refund is queued; its status is below.');
+  assert.equal(savedText(partial, sent('partial_refund', 'p1')), 'Decision saved: Refunded €11.50. The refund is queued; its status is below.');
+  assert.equal(savedText(caseRow({ problems: [resolved({ resolution: 'release' })], attention: null }), sent('release', 'p1')),
+    'Decision saved: Payout released.');
   assert.equal(savedText(caseRow({
-    problems: [{ ...wentWrong, status: 'resolved', resolution: 'release' }], attention: null,
-  })), 'Decision saved: Payout released.');
-  assert.equal(savedText(caseRow({
-    problems: [{ ...wentWrong, status: 'resolved', resolution: 'full_refund' }],
-    refunds: [{ amount_cents: 2300, reason: 'team', status: 'succeeded', created_at: '2026-10-10T08:00:00Z' }], attention: null,
-  })), 'Decision saved: Refunded in full.');
+    problems: [resolved({ resolution: 'full_refund', resolution_cents: 2300 })], refunds: [team(2300, 'succeeded')], attention: null,
+  }), sent('full_refund', 'p1')), 'Decision saved: Refunded in full.');
   // A refund that Stripe has not finished is queued too, whether it is 'requested' or 'pending'.
   assert.match(savedText(caseRow({
-    problems: [{ ...wentWrong, status: 'resolved', resolution: 'full_refund' }],
-    refunds: [{ amount_cents: 2300, reason: 'team', status: 'pending', created_at: '2026-10-10T08:00:00Z' }], attention: null,
-  })), /queued/);
-  // Still open problems in the answer: the page must not claim a success, even when one is resolved.
-  assert.equal(savedText(caseRow()), null);
-  assert.equal(savedText(caseRow({ problems: [wentWrong, { ...dispute, status: 'resolved', resolution: 'release' }] })), null);
-  assert.equal(savedText(null), null);
+    problems: [resolved({ resolution: 'full_refund', resolution_cents: 2300 })], refunds: [team(2300, 'pending')], attention: null,
+  }), sent('full_refund', 'p1')), /queued/);
+
+  // The banner is about the problems this request closed, not an earlier decision: an old resolved partial
+  // refund of 5 euro sits next to a release that was just made, with an unrelated pending policy refund.
+  const older = resolved({ id: 'old', created_at: '2026-10-01T08:00:00Z', resolution: 'partial_refund', resolution_cents: 500 });
+  const release = caseRow({
+    problems: [older, resolved({ resolution: 'release' })],
+    refunds: [
+      { amount_cents: 500, reason: 'team', status: 'pending', created_at: '2026-10-02T08:00:00Z' },
+      { amount_cents: 1100, reason: 'policy', status: 'requested', created_at: '2026-10-03T08:00:00Z' },
+    ], attention: null,
+  });
+  assert.equal(savedText(release, sent('release', 'p1')), 'Decision saved: Payout released.');
+  // ...and it only mentions a queued refund when this decision made one: this team refund is 5 euro, not the 11.50 decided.
+  assert.doesNotMatch(savedText(caseRow({
+    problems: [older, resolved({ resolution: 'partial_refund', resolution_cents: 1150 })], refunds: [team(500, 'pending')], attention: null,
+  }), sent('partial_refund', 'p1')), /queued/);
+
+  // Only the team's own refund counts: a pending policy refund of the same amount is somebody else's.
+  assert.doesNotMatch(savedText(caseRow({
+    problems: [resolved({ resolution: 'partial_refund', resolution_cents: 1150 })],
+    refunds: [{ amount_cents: 1150, reason: 'policy', status: 'pending', created_at: '2026-10-03T08:00:00Z' }], attention: null,
+  }), sent('partial_refund', 'p1')), /queued/);
+
+  // One request can close two reports (the customer's and the pro's): all must be resolved the way it was sent.
+  const both = [resolved({ resolution: 'release' }), resolved({ id: 'p2', reporter_role: 'pro', kind: 'customer_no_show', resolution: 'release' })];
+  assert.equal(savedText(caseRow({ problems: both, attention: null }), sent('release', 'p1', 'p2')), 'Decision saved: Payout released.');
+  assert.equal(savedText(caseRow({ problems: [both[0], { ...both[1], resolution: 'withhold' }], attention: null }), sent('release', 'p1', 'p2')), null);
+
+  // The page must not claim a success it can't see: a problem still open, one that was sent but isn't resolved,
+  // a different decision than the one sent, or nothing to say which problems were sent.
+  assert.equal(savedText(caseRow(), sent('release', 'p1')), null);
+  assert.equal(savedText(caseRow({ problems: [wentWrong, resolved({ id: 'p9', resolution: 'release' })] }), sent('release', 'p9')), null); // p1 still open
+  assert.equal(savedText(caseRow({ problems: [resolved({ resolution: 'release' })], attention: null }), sent('release', 'p1', 'p2')), null);
+  assert.equal(savedText(caseRow({ problems: [resolved({ resolution: 'release' })], attention: null }), sent('partial_refund', 'p1')), null);
+  assert.equal(savedText(caseRow({ problems: [resolved({ resolution: 'release' })], attention: null }), sent('release')), null);
+  assert.equal(savedText(caseRow({ problems: [resolved({ resolution: 'release' })], attention: null })), null);
+  assert.equal(savedText(null, sent('release', 'p1')), null);
 });
 
 test('chat_lines', () => {
@@ -706,9 +755,55 @@ test('case_rows_and_errors', () => {
   for (const bad of [null, undefined, 'x', [], {}, { booking: { id: 'other' }, problems: [] }, { booking: { id: 'b1' } }, { booking: null, problems: [] }]) {
     assert.equal(asCaseRow(bad, 'b1'), null, JSON.stringify(bad));
   }
+  // Every refusal carries a hint (the error contract); it is read first, the message second.
+  const refused = saveErrorText({ code: '22023', hint: 'invalid_input', message: 'the note must have 5 to 1000 characters' });
+  assert.match(refused, /refused|already/i);
+  assert.match(refused, /the note must have 5 to 1000 characters/); // the message names the field
+  assert.match(saveErrorText({ hint: 'invalid_input', message: '' }), /refused/i);
+  assert.match(saveErrorText({ hint: 'invalid_input' }), /refused/i);
+  assert.match(saveErrorText({ hint: 'not_participant', message: 'invalid_input' }), /refused/i);
+  assert.equal(saveErrorText({ hint: 'payment_unavailable', message: 'Stripe is down' }), 'Couldn’t save: Stripe is down');
   assert.match(saveErrorText({ message: 'invalid_input' }), /refused|already/i);
   assert.match(saveErrorText({ code: '42501', message: 'Admins only' }), /admin/i);
   assert.equal(saveErrorText({ message: 'connection reset' }), 'Couldn’t save: connection reset');
   assert.equal(saveErrorText({}), 'Couldn’t save: unknown error');
   assert.equal(saveErrorText(null), 'Couldn’t save: unknown error');
+});
+
+test('request_tracker_sends_once_and_ignores_stale_answers', () => {
+  const requests = createRequestTracker();
+  // A case with a request on its way can't be sent for again.
+  const first = requests.start('b1');
+  assert.notEqual(first, null);
+  assert.equal(requests.isBusy('b1'), true);
+  assert.equal(requests.start('b1'), null);
+  assert.equal(requests.start('b1'), null);
+  // Other cases are independent.
+  const other = requests.start('b2');
+  assert.notEqual(other, null);
+  assert.equal(requests.isBusy('b3'), false);
+  // The answer of the open request clears it; a second copy of the answer is stale.
+  assert.equal(requests.finish('b1', first), true);
+  assert.equal(requests.isBusy('b1'), false);
+  assert.equal(requests.finish('b1', first), false);
+  assert.equal(requests.isBusy('b2'), true);
+  // After the answer the case can be sent for again, with a new token that the old one can't finish.
+  const again = requests.start('b1');
+  assert.notEqual(again, null);
+  assert.notEqual(again, first);
+  assert.equal(requests.finish('b1', first), false);
+  assert.equal(requests.isBusy('b1'), true);
+  assert.equal(requests.finish('b1', again), true);
+  // An answer for a case that has no open request, or with another case's token, is ignored.
+  assert.equal(requests.finish('nope', 1), false);
+  assert.equal(requests.finish('b2', first), false);
+  assert.equal(requests.finish('b2', undefined), false);
+  assert.equal(requests.finish('never-started', undefined), false);
+  assert.equal(requests.isBusy('b2'), true);
+  // A reset (sign-out) makes every answer still on its way stale.
+  requests.reset();
+  assert.equal(requests.isBusy('b2'), false);
+  assert.equal(requests.finish('b2', other), false);
+  // Only a booking id can be sent for.
+  for (const bad of [null, undefined, '', 7, {}]) assert.equal(requests.start(bad), null);
 });

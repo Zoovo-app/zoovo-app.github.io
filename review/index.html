@@ -194,7 +194,7 @@ table.cases{width:100%;min-width:760px;border-collapse:collapse;font-size:14px}
 import { supabaseClient } from '/assets/supabase.js';
 import {
   PRO_SORTS, allowedDecisions, asCaseRow, attentionLabel, bookingWhen, cancelRate, cancellationRows,
-  cancellationText, caseItems, centsToInput, chatLines, confirmText, decisionPreview, durationLabel,
+  cancellationText, caseItems, centsToInput, chatLines, confirmText, createRequestTracker, decisionPreview, durationLabel,
   failedJobs, formatEuro, isOpenCase, kvkUrl, methodLabel, openProblems, parseEuroToCents,
   paymentStatusLabel, problemDetails, proSubline, reasonCounts, refundRows, refundableCents,
   retryConfirmText, reverseConfirmText, saveErrorText, savedText, sortPros, stateText,
@@ -474,13 +474,17 @@ const cancellationSlots = new Map(); // pro id -> the element on screen that sho
 // then shows only the reason counts.
 let cancellationsMissing = false;
 const CANCELLATIONS_LIMIT = 20;
-// Problems: the case open below the list (a booking id), the cases with a
-// request on its way (nothing may be sent for them again), and the cases the
-// database answered for since the last load, by the action: 'decision',
-// 'reversal' or 'retry'.
+// Problems: the case open below the list (a booking id); the cases with a
+// request on its way (nothing may be sent for them again, and an answer that
+// isn't expected is ignored); the cases the database answered for since the
+// last load, {kind: 'decision'|'reversal'|'retry', decision, ids} by booking id;
+// answers that came in while the list was being loaded again; and what the
+// reviewer has typed per case (note and amount), kept until that case is saved.
 let selectedCase = null;
-const busyCases = new Set();
+const requests = createRequestTracker();
 const savedCases = new Map();
+const overlays = new Map(); // booking id -> {row, meta, seq}: seq is the load it waits for
+const drafts = new Map(); // booking id -> {note, amount}
 const caseChats = new Map(); // booking id -> {status: 'loading'|'ok'|'error'|'missing', open, rows, message}
 const CHAT_LIMIT = 100;
 // A message above the list that must survive the reload an action triggers.
@@ -618,7 +622,17 @@ async function loadProblems(seq) {
     return;
   }
   rows = Array.isArray(data) ? data : [];
-  counts.problems = rows.length; // the open list is the count
+  // An answer that came in while this list was on its way is newer than what
+  // the list says about that case (the list may have been read before the save).
+  rows = rows.map((r) => {
+    const late = overlays.get(caseId(r));
+    if (!late || late.seq !== seq) return r;
+    savedCases.set(caseId(r), late.meta);
+    return late.row;
+  });
+  overlays.clear();
+  for (const id of [...drafts.keys()]) if (!rows.some((r) => caseId(r) === id)) drafts.delete(id); // cases that are gone
+  counts.problems = openCount(); // the open list is the count
   renderTabs();
   renderList();
 }
@@ -743,11 +757,12 @@ function renderFilters() {
   }
 }
 
-function renderList() {
+// `keepCard`: the Problems list changed under a case card that must stay as it is.
+function renderList(keepCard = false) {
   // The RPCs return at most 200 rows.
   const capped = rows.length >= 200 ? ' (the list stops at 200)' : '';
   if (activeTab === 'pros') return renderPros(capped);
-  if (activeTab === 'problems') return renderProblems(capped);
+  if (activeTab === 'problems') return renderProblems(capped, keepCard);
   const order = activeTab === 'live' ? 'latest change first' : 'oldest first';
   $('listMsg').textContent = rows.length ? `${rows.length} shown, ${order}${capped}` : 'Nothing here.';
   $('list').replaceChildren(...(activeTab === 'apps' ? rows.map(card) : rows.map((r) => serviceCard(r, activeTab))));
@@ -1078,10 +1093,16 @@ function notice(kind, text) {
   return node;
 }
 
-function renderProblems(capped) {
+function renderProblems(capped, keepCard = false) {
   if (!rows.some((r) => caseId(r) === selectedCase)) selectedCase = rows.length ? caseId(rows[0]) : null;
   $('listMsg').textContent = rows.length ? `${openCount()} open, oldest first${capped}` : 'No open problems.';
   const chosen = rows.find((r) => caseId(r) === selectedCase);
+  // Another case was answered: redraw the table only. Replacing the open card
+  // would take the focus and the caret from a note being typed.
+  const onScreen = keepCard && chosen ? $('list').querySelector('article.case') : null;
+  if (onScreen && onScreen.dataset.caseId === caseId(chosen) && $('list').querySelector('.tablewrap')) {
+    return $('list').querySelector('.tablewrap').replaceWith(casesTable());
+  }
   $('list').replaceChildren(...[
     el('p', { className: 'muted', textContent: 'Reports after a booking, and card disputes. The pro’s payout stays on hold until you decide.' }),
     problemNotice ? notice(problemNotice.kind, problemNotice.text) : null,
@@ -1104,9 +1125,13 @@ function caseTableRow(row) {
   const items = caseItems(row);
   const selected = id !== null && id === selectedCase;
   const since = waitingSince(row);
-  const attention = attentionLabel(row) || (savedCases.has(id) ? 'Resolved' : '—');
+  // A case the database answered for, with nothing left open: a decision is
+  // resolved; a reversal or a retry is only queued, the worker still has to do it.
+  const saved = savedCases.get(id);
+  const closed = saved !== undefined && !isOpenCase(row);
+  const attention = attentionLabel(row) || (closed ? (saved.kind === 'decision' ? 'Resolved' : 'Queued') : '—');
   const failed = row.attention === 'refund_failed' || row.attention === 'transfer_failed';
-  const need = savedCases.has(id) && !isOpenCase(row) ? 'need done' : failed ? 'need bad' : 'need';
+  const need = closed && saved.kind === 'decision' ? 'need done' : failed ? 'need bad' : 'need';
 
   const pick = (item) => {
     const button = el('button', { type: 'button', className: 'linkish', textContent: item.who });
@@ -1156,10 +1181,10 @@ function caseCard(row) {
 
   const saved = savedCases.get(id);
   const savedBanner = !saved ? null
-    : saved === 'decision'
-      ? (savedText(row) ? notice('ok', savedText(row))
-        : notice('warn', 'The server answered, but this case still has open problems. Check the state below before you do anything else.'))
-      : saved === 'reversal'
+    : saved.kind === 'decision'
+      ? (savedText(row, saved) ? notice('ok', savedText(row, saved))
+        : notice('warn', 'The server answered, but not with the decision that was sent. Check the state below before you do anything else.'))
+      : saved.kind === 'reversal'
         ? notice('ok', `Reversal requested. Transfer status now: ${transferLabel(b.transfer_status)}.`)
         : notice('ok', 'Retry queued. The job runs again; refresh in a minute to see whether it worked.');
 
@@ -1168,7 +1193,7 @@ function caseCard(row) {
   const problems = problemDetails(row);
   const stripeIds = [['Payment', b.payment_intent_id], ['Transfer', b.transfer_id]].filter(([, v]) => typeof v === 'string' && v);
 
-  return el('article', { className: 'card case' },
+  const article = el('article', { className: 'card case' },
     el('div', { className: 'case-head' },
       el('h2', { textContent: `${[...new Set(items.map((i) => i.reason))].join(', ')} · ${b.service_title ?? 'Booking'}` }),
       tags,
@@ -1207,6 +1232,8 @@ function caseCard(row) {
           : [none('No problem is recorded for this booking.')]),
         id ? chatPanel(row, id) : null)),
     id ? caseActions(row, id) : null);
+  article.dataset.caseId = id ?? '';
+  return article;
 }
 
 // "Show chat": admin_booking_messages, once per case until the next load, read only.
@@ -1265,12 +1292,17 @@ function chatPanel(row, id) {
 function caseActions(row, id) {
   const b = row.booking ?? {};
   const allowed = allowedDecisions(row);
-  const jobs = failedJobs(row);
-  const canReverse = b.transfer_status === 'sent';
-  const moneyFailed = row.attention === 'refund_failed' || row.attention === 'transfer_failed';
+  // The database has just answered for this case: the reversal and the retry
+  // wait for the next load, so they can't be asked for on a state that is already moving.
+  const justSaved = savedCases.has(id);
+  const jobs = justSaved ? [] : failedJobs(row);
+  const canReverse = !justSaved && b.transfer_status === 'sent';
+  const moneyFailed = !justSaved && (row.attention === 'refund_failed' || row.attention === 'transfer_failed');
   if (!allowed.length && !canReverse && !jobs.length && !moneyFailed) return null;
 
-  const busy = busyCases.has(id); // a request for this case is still on its way
+  const busy = requests.isBusy(id); // a request for this case is still on its way
+  const draft = drafts.get(id) ?? {}; // what was typed here before the list was drawn again
+  const keep = (part) => drafts.set(id, { ...drafts.get(id), ...part });
   const left = refundableCents(row) ?? 0;
   const box = el('div', { className: 'actions sep' });
   const formError = el('p', { className: 'error' });
@@ -1279,17 +1311,19 @@ function caseActions(row, id) {
   status.setAttribute('role', 'status');
   if (busy) status.textContent = 'Saving… please wait. Don’t close this page.';
 
-  const note = el('textarea', { rows: 3, maxLength: 1000, disabled: busy });
+  const note = el('textarea', { rows: 3, maxLength: 1000, disabled: busy, value: draft.note ?? '' });
+  note.oninput = () => keep({ note: note.value });
   const optionRow = (className, ...children) => el('div', { className: `option ${className}`.trim() }, ...children);
   const hint = (text) => el('span', { className: 'hint', textContent: text });
 
   // Sends one action. The card locks first (act), so a second click can't
   // send a second request, and the case stays locked until the answer is in.
-  const go = (fn, args, button, kind) => {
-    if (busyCases.has(id)) return;
-    busyCases.add(id);
+  // `meta` is what the answer is checked against: {kind, decision, ids}.
+  const go = (fn, args, button, meta) => {
+    const token = requests.start(id);
+    if (token === null) return; // a request for this case is already on its way
     status.textContent = 'Saving… please wait. Don’t close this page.';
-    act(fn, args, button, (result) => finishCaseAction(id, kind, result));
+    act(fn, args, button, (result) => finishCaseAction(id, token, meta, result));
   };
   // The note first: it is the top of the form.
   const refuse = (message, field) => { formError.textContent = message; field?.focus(); };
@@ -1310,14 +1344,16 @@ function caseActions(row, id) {
   amount.setAttribute('aria-label', 'Refund amount in euros');
 
   const decide = (decision, button) => {
-    if (busyCases.has(id)) return;
+    if (requests.isBusy(id)) return;
     const cents = decision === 'partial_refund' ? parseEuroToCents(amount.value) : null;
     const problem = validateDecision(row, decision, cents, note.value);
     if (problem) return refuse(problem, validateNote(note.value) ? note : amount);
     formError.textContent = '';
     if (!confirm(confirmText(row, decision, cents))) return;
     go('admin_resolve_booking_problems',
-      { p_booking_id: id, p_decision: decision, p_refund_cents: cents, p_note: note.value.trim() }, button, 'decision');
+      { p_booking_id: id, p_decision: decision, p_refund_cents: cents, p_note: note.value.trim() }, button,
+      // The problems open on the card that was on screen: the answer must have closed these.
+      { kind: 'decision', decision, ids: openProblems(row).map((p) => p.id) });
   };
   const payoutText = b.payout_cents > 0 ? ` · ${formatEuro(b.payout_cents)}` : '';
   const options = {
@@ -1328,7 +1364,8 @@ function caseActions(row, id) {
     },
     partial_refund: () => {
       const suggestion = suggestedRefund(row);
-      if (suggestion) amount.value = centsToInput(suggestion);
+      // What was typed before wins over the suggestion, even if it was cleared.
+      amount.value = draft.amount ?? (suggestion ? centsToInput(suggestion) : '');
       const button = el('button', { type: 'button', className: 'btn', textContent: 'Refund part', disabled: busy });
       button.onclick = () => decide('partial_refund', button);
       const preview = hint('');
@@ -1339,7 +1376,7 @@ function caseActions(row, id) {
           ? `Enter a refund from €0.01 to ${formatEuro(left)}, like 7 or 7,50.`
           : `Enter the amount to refund, up to ${formatEuro(left)}.`);
       };
-      amount.oninput = update;
+      amount.oninput = () => { keep({ amount: amount.value }); update(); };
       update();
       const field = el('label', { className: 'amount-label' }, 'Amount ',
         el('span', { className: 'amount' }, el('span', { className: 'muted', textContent: '€' }), amount));
@@ -1368,7 +1405,7 @@ function caseActions(row, id) {
       if (problem) return refuse(problem, note);
       formError.textContent = '';
       if (!confirm(reverseConfirmText(row))) return;
-      go('admin_reverse_transfer', { p_booking_id: id, p_note: note.value.trim() }, reverse, 'reversal');
+      go('admin_reverse_transfer', { p_booking_id: id, p_note: note.value.trim() }, reverse, { kind: 'reversal' });
     };
     box.append(optionRow('', reverse, hint('Takes the money back from the pro’s Stripe account. Uses the note above.')));
   }
@@ -1378,7 +1415,7 @@ function caseActions(row, id) {
     retry.onclick = () => {
       if (!confirm(retryConfirmText(job))) return;
       formError.textContent = '';
-      go('admin_retry_payment_job', { p_job_id: job.id }, retry, 'retry');
+      go('admin_retry_payment_job', { p_job_id: job.id }, retry, { kind: 'retry' });
     };
     box.append(optionRow('', retry, hint(job.error ? `Failed with: ${job.error}` : 'This job failed. Retrying sends it again with the same key.')));
   }
@@ -1390,11 +1427,13 @@ function caseActions(row, id) {
   return box;
 }
 
-// What to do with the answer to an action. A success shows the row the
-// database sent back; an error, or an answer that isn't a case, reloads the
-// list so the card shows what is true now.
-async function finishCaseAction(id, kind, { data, error }) {
-  busyCases.delete(id);
+// What to do with the answer to an action. `meta` is what was sent ({kind,
+// decision, ids}). An answer that no request is waiting for (the reviewer
+// signed out meanwhile) is ignored. A success shows the row the database sent
+// back; an error, or an answer that isn't a case, reloads the list so the card
+// shows what is true now.
+async function finishCaseAction(id, token, meta, { data, error }) {
+  if (!requests.finish(id, token)) return;
   const here = activeTab === 'problems';
   if (error) {
     const text = saveErrorText(error);
@@ -1406,17 +1445,25 @@ async function finishCaseAction(id, kind, { data, error }) {
     return load();
   }
   const updated = asCaseRow(data, id);
-  if (here && updated && rows.some((r) => caseId(r) === id)) {
+  // The note and the amount are spent once the database took the decision (and
+  // answered with the case) or the reversal; a retry doesn't use them.
+  if (updated ? meta.kind !== 'retry' : meta.kind === 'reversal') drafts.delete(id);
+  if (here && updated) {
+    if (!rows.some((r) => caseId(r) === id)) {
+      // The list is being loaded again: that load may have read the case before this save. It shows this answer instead.
+      overlays.set(id, { row: updated, meta, seq: loadSeq });
+      return;
+    }
     rows = rows.map((r) => (caseId(r) === id ? updated : r));
-    savedCases.set(id, kind);
+    savedCases.set(id, meta);
     counts.problems = openCount();
     renderTabs();
-    return renderList();
+    return renderList(id !== selectedCase); // another case's card is left alone
   }
   if (here) {
-    problemNotice = kind === 'decision'
+    problemNotice = meta.kind === 'decision'
       ? { kind: 'bad', text: 'The server answered with something unexpected. The list was reloaded; check the case before trying again.' }
-      : { kind: 'ok', text: kind === 'reversal'
+      : { kind: 'ok', text: meta.kind === 'reversal'
         ? 'Reversal requested. The list was reloaded; the transfer status shows where it stands.'
         : 'Retry queued. The list was reloaded; refresh in a minute to see whether it worked.' };
     keepNotice = true;
@@ -1869,6 +1916,9 @@ $('signout').onclick = async () => {
   cancellationSlots.clear();
   selectedCase = null;
   problemNotice = null;
+  requests.reset(); // an answer still on its way is no longer expected
+  drafts.clear();
+  overlays.clear();
   savedCases.clear();
   caseChats.clear();
   chatPainters.clear();

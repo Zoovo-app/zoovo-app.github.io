@@ -560,6 +560,22 @@ export function bookingWhen(startIso, endIso) {
 
 const CANCELLED_BY = { customer: 'the pet parent', pro: 'the pro' };
 
+// The reasons the database gives when it cancels by itself.
+const SYSTEM_REASONS = {
+  slot_taken: 'Time no longer available',
+  pro_suspended: 'Pro suspended',
+  account_deleted: 'Account deleted',
+  hold_expired: 'Payment not completed in time',
+  payment_cancelled: 'Payment cancelled',
+  payment_mismatch: 'Payment amount mismatch',
+};
+
+// A customer's or pro's reason in the app's words, else one of the database's
+// own, else the key as it is.
+function cancelReasonLabel(key) {
+  return typeof key === 'string' && Object.hasOwn(SYSTEM_REASONS, key) ? SYSTEM_REASONS[key] : reasonLabel(key);
+}
+
 // For a cancelled booking: who cancelled, when, with the reason in the app's
 // words and the note. null for any other status.
 export function cancellationText(booking) {
@@ -570,7 +586,7 @@ export function cancellationText(booking) {
   const note = trimmed(booking.cancel_note);
   return [
     `Cancelled ${by ? `by ${by}` : 'automatically'}${when ? ` on ${when}` : ''}`,
-    by || trimmed(booking.cancel_reason) ? `Reason: ${reasonLabel(booking.cancel_reason)}` : null,
+    by || trimmed(booking.cancel_reason) ? `Reason: ${cancelReasonLabel(booking.cancel_reason)}` : null,
     note ? `“${note}”` : null,
   ].filter(Boolean).join(' · ');
 }
@@ -583,7 +599,8 @@ const NOTIFIED = 'Both are notified.';
 
 // The sentence under a decision's button: what the reviewer should expect.
 // '' when the decision or the amount isn't one the database would accept.
-export function decisionPreview(row, decision, refundCents) {
+// `now` (a time in ms) tells a payout that is still ahead from one that is due.
+export function decisionPreview(row, decision, refundCents, now = Date.now()) {
   const b = bookingOf(row);
   const customer = upperFirst(customerName(row));
   const pro = upperFirst(proName(row));
@@ -599,6 +616,9 @@ export function decisionPreview(row, decision, refundCents) {
     case 'release':
       if (b.transfer_status === 'sent') return `No refund. The payout of ${formatEuro(b.payout_cents)} was already sent to ${proName(row)}.`;
       if (!(b.payout_cents > 0)) return 'No refund and no payout is due; this only closes the case.';
+      if (Date.parse(b.payout_due_at) > now) {
+        return `No refund. ${pro} is paid ${formatEuro(b.payout_cents)} once it is due (${whenLabel(b.payout_due_at)}).`;
+      }
       return `No refund. ${pro} is paid ${formatEuro(b.payout_cents)} at the next payout run.`;
     case 'withhold':
       if (b.transfer_status === 'sent') return 'Marks the payout as withheld. It does not take back money that was already sent: use Reverse transfer for that.';
@@ -659,27 +679,41 @@ export function asCaseRow(value, bookingId) {
 }
 
 // The banner after a decision, worked out from the row the database returned
-// (not from what was sent). null while problems are still open in it: then
-// nothing was resolved and the page must not say so.
-export function savedText(row) {
-  if (!isObject(row) || openProblems(row).length > 0) return null;
-  const problems = Array.isArray(row.problems) ? row.problems : [];
-  const done = problems.filter(isObject).find((p) => p.status === 'resolved' && resolutionText(p));
-  if (!done) return null;
+// (not from what was sent). `sent` is {decision, ids}: the decision that was
+// sent and the ids of the problems that were open when it was sent. Only those
+// problems count: an earlier decision on the same booking is not announced. It
+// says "saved" only if each of them is resolved now, the way it was sent, and
+// no problem is open in the answer; otherwise it is null and the page must not
+// claim anything. A queued refund is mentioned only when this decision made one.
+export function savedText(row, sent) {
+  if (!isObject(row) || openProblems(row).length > 0 || !isObject(sent)) return null;
+  const ids = Array.isArray(sent.ids) ? sent.ids : [];
+  const problems = Array.isArray(row.problems) ? row.problems.filter(isObject) : [];
+  const closed = problems.filter((p) => ids.includes(p.id) && p.status === 'resolved');
+  if (ids.length === 0 || closed.length !== ids.length || !closed.every((p) => p.resolution === sent.decision)) return null;
+  const said = resolutionText(closed[0]);
+  if (!said) return null;
+  // The refund this decision created: the team's, for the amount decided, still on its way.
+  const cents = closed[0].resolution_cents;
   const refunds = Array.isArray(row.refunds) ? row.refunds : [];
-  const queued = refunds.some((r) => isObject(r) && (r.status === 'requested' || r.status === 'pending'));
-  return `Decision saved: ${resolutionText(done)}.${queued ? ' The refund is queued; its status is below.' : ''}`;
+  const queued = (sent.decision === 'full_refund' || sent.decision === 'partial_refund')
+    && refunds.some((r) => isObject(r) && r.reason === 'team' && (r.status === 'requested' || r.status === 'pending')
+      && (!Number.isInteger(cents) || r.amount_cents === cents));
+  return `Decision saved: ${said}.${queued ? ' The refund is queued; its status is below.' : ''}`;
 }
 
-// A failed action in words. invalid_input is what the database says for a
-// case somebody else already decided as well as for a bad note or amount.
+// A failed action in words. Every refusal carries a HINT (the error contract),
+// so that is read first, then the message. invalid_input is what the database
+// says for a case somebody else already decided as well as for a bad note or
+// amount; its message names the field.
 export function saveErrorText(error) {
-  const message = trimmed(error?.message) ?? 'unknown error';
-  if (/invalid_input/.test(message)) {
-    return 'Couldn’t save: the server refused it (invalid_input). Another reviewer may have decided this case already, or the note or amount isn’t valid.';
+  const message = trimmed(error?.message);
+  if (error?.hint === 'invalid_input' || /invalid_input/.test(message ?? '')) {
+    const named = message && message !== 'invalid_input' ? ` (${message})` : ' (invalid_input)';
+    return `Couldn’t save: the server refused it${named}. Another reviewer may have decided this case already, or the note or amount isn’t valid.`;
   }
-  if (error?.code === '42501' || /Admins only/.test(message)) return 'Couldn’t save: this account isn’t an admin.';
-  return `Couldn’t save: ${message}`;
+  if (error?.code === '42501' || /Admins only/.test(message ?? '')) return 'Couldn’t save: this account isn’t an admin.';
+  return `Couldn’t save: ${message ?? 'unknown error'}`;
 }
 
 // ---- The chat -----------------------------------------------------------------
@@ -703,4 +737,31 @@ export function chatLines(messages, row) {
       muted: system || deleted,
     };
   });
+}
+
+// ---- One request per case ------------------------------------------------------
+
+// Tracks which cases have a request on its way, so none is sent twice and an
+// answer that is no longer expected is ignored. start() gives a token, or null
+// when the case already has a request open (or `id` isn't a booking id); the
+// answer comes back through finish(id, token), which is true only for the
+// request that is open, once. reset() (sign-out) makes every answer still on
+// its way stale.
+export function createRequestTracker() {
+  const open = new Map(); // booking id -> token of the request on its way
+  let last = 0;
+  return {
+    start(id) {
+      if (typeof id !== 'string' || id === '' || open.has(id)) return null;
+      open.set(id, ++last);
+      return last;
+    },
+    isBusy: (id) => open.has(id),
+    finish(id, token) {
+      if (token === undefined || open.get(id) !== token) return false;
+      open.delete(id);
+      return true;
+    },
+    reset: () => open.clear(),
+  };
 }
