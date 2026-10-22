@@ -193,13 +193,14 @@ table.cases{width:100%;min-width:760px;border-collapse:collapse;font-size:14px}
 <script type="module">
 import { supabaseClient } from '/assets/supabase.js';
 import {
-  PRO_SORTS, allowedDecisions, asCaseRow, attentionLabel, bookingWhen, canRequeue, cancelRate,
-  cancellationRows, cancellationText, caseItems, centsToInput, chatLines, confirmText,
-  createRequestTracker, decisionButtonLabel, decisionPreview, durationLabel, failedJobs, formatEuro,
-  isOpenCase, kvkUrl, methodLabel, openProblems, parseEuroToCents, paymentStatusLabel, problemDetails,
-  proSubline, reasonCounts, recordRefundConfirmText, recordableRefunds, recordedText, refundRows,
-  refundableCents, requeueConfirmText, requeueableRefunds, requeuedText, retryConfirmText,
-  reverseConfirmText, reverseLabel, saveErrorText, savedText, sortPros, stateText, stripeTypeNote,
+  PRO_SORTS, allowedDecisions, asCaseRow, attentionLabel, bookingWhen, canCheckTransfer, canRequeue,
+  cancelRate, cancellationRows, cancellationText, caseItems, centsToInput, chatLines,
+  checkTransferConfirmText, confirmText, createRequestTracker, decisionButtonLabel,
+  decisionNoticeText, decisionPreview, durationLabel, failedJobs, formatEuro, isOpenCase, kvkUrl,
+  methodLabel, moneyFlags, openProblems, parseEuroToCents, paymentStatusLabel, problemDetails,
+  proSubline, reasonCounts, recordRefundConfirmText, recordedText, refundRows, refundableCents,
+  requeueConfirmText, requeueableRefunds, requeuedText, retryConfirmText, reverseConfirmText,
+  reverseLabel, saveErrorText, savedText, seenLogId, sortPros, stateText, stripeTypeNote,
   suggestedRefund, transferLabel, validateDecision, validateNote, verificationBadges, waitingSince,
   whenLabel,
 } from '/review/lib.js';
@@ -1132,9 +1133,10 @@ function caseTableRow(row) {
   const saved = savedCases.get(id);
   const closed = saved !== undefined && !isOpenCase(row);
   const SAVED_LABEL = { decision: 'Resolved', record: 'Recorded' }; // the others are only queued: the worker still has to act
-  const attention = attentionLabel(row) || (closed ? (SAVED_LABEL[saved.kind] ?? 'Queued') : '—');
+  const savedLabel = saved && (saved.decision === 'acknowledge' ? 'Acknowledged' : SAVED_LABEL[saved.kind]);
+  const attention = attentionLabel(row) || (closed ? (savedLabel ?? 'Queued') : '—');
   const failed = row.attention === 'refund_failed' || row.attention === 'transfer_failed';
-  const need = closed && SAVED_LABEL[saved.kind] ? 'need done' : failed ? 'need bad' : 'need';
+  const need = closed && savedLabel ? 'need done' : failed ? 'need bad' : 'need';
 
   const pick = (item) => {
     const button = el('button', { type: 'button', className: 'linkish', textContent: item.who });
@@ -1179,7 +1181,7 @@ function caseCard(row) {
     })),
     b.transfer_status === 'frozen' ? el('span', { className: 'tag added', textContent: 'payout on hold' }) : null,
     b.transfer_status === 'sent' ? el('span', { className: 'tag added', textContent: 'transfer already sent' }) : null,
-    row.attention === 'refund_failed' || row.attention === 'transfer_failed'
+    attentionLabel(row) && row.attention !== 'problem'
       ? el('span', { className: 'tag warn', textContent: attentionLabel(row) }) : null);
 
   const saved = savedCases.get(id);
@@ -1195,7 +1197,9 @@ function caseCard(row) {
           : saved.kind === 'requeue'
             ? (requeuedText(row, saved) ? notice('ok', requeuedText(row, saved))
               : notice('warn', 'The server answered, but a refund is still waiting to be sent again. Check the state below before you do anything else.'))
-            : notice('ok', 'Retry queued. The job runs again; refresh in a minute to see whether it worked.');
+            : saved.kind === 'check'
+              ? notice('ok', 'Lookup requested. Nothing has moved; refresh in a minute to see what Stripe says.')
+              : notice('ok', 'Retry queued. The job runs again; refresh in a minute to see whether it worked.');
 
   const cancelled = cancellationText(b);
   const refunds = refundRows(row);
@@ -1307,14 +1311,15 @@ function caseActions(row, id) {
   // asked for on a state that is already moving.
   const justSaved = savedCases.has(id);
   const jobs = justSaved ? [] : failedJobs(row);
-  const flags = justSaved ? [] : recordableRefunds(row); // Stripe refunds the books don't have
+  const flags = justSaved ? [] : moneyFlags(row); // Stripe refunds the books don't agree with
   const requeue = !justSaved && canRequeue(row);
+  const check = !justSaved && canCheckTransfer(row);
   const canReverse = !justSaved && b.transfer_status === 'sent';
   // Only a database that doesn't list its failed jobs leaves a failure unexplained.
   const moneyFailed = !justSaved && !Array.isArray(row.failed_jobs)
     && (row.attention === 'refund_failed' || row.attention === 'transfer_failed');
-  const needsNote = allowed.length > 0 || canReverse || flags.length > 0 || requeue;
-  if (!needsNote && !jobs.length && !moneyFailed) return null;
+  const needsNote = allowed.length > 0 || canReverse || flags.some((f) => f.recordable) || requeue || check;
+  if (!needsNote && !jobs.length && !moneyFailed && !flags.length) return null;
 
   const busy = requests.isBusy(id); // a request for this case is still on its way
   const draft = drafts.get(id) ?? {}; // what was typed here before the list was drawn again
@@ -1346,9 +1351,7 @@ function caseActions(row, id) {
 
   if (needsNote) {
     box.append(el('label', {}, 'Note (required, saved with the action)', note),
-      allowed.length ? el('span', { className: 'muted', textContent: openProblems(row).length > 0
-        ? 'Both the pet parent and the pro are notified when you decide.'
-        : 'No one is notified when you decide: no report is open on this booking.' }) : null,
+      allowed.length ? el('span', { className: 'muted', textContent: decisionNoticeText(row) }) : null,
       formError);
   }
   if (allowed.length) {
@@ -1368,8 +1371,12 @@ function caseActions(row, id) {
     if (problem) return refuse(problem, validateNote(note.value) ? note : amount);
     formError.textContent = '';
     if (!confirm(confirmText(row, decision, cents))) return;
+    // What the reviewer saw: the money log up to seen_log_id. The RPC refuses the decision when payment
+    // events arrived after it (then the list is reloaded, see finishCaseAction).
+    const seen = seenLogId(row);
     go('admin_resolve_booking_problems',
-      { p_booking_id: id, p_decision: decision, p_refund_cents: cents, p_note: note.value.trim() }, button,
+      { p_booking_id: id, p_decision: decision, p_refund_cents: cents, p_note: note.value.trim(),
+        ...(seen === null ? {} : { p_seen_log_id: seen }) }, button,
       // The problems open on the card that was on screen: the answer must have closed these. A case with
       // none open is checked by the refund it asked for (cents, on top of what was refunded before).
       { kind: 'decision', decision, ids: openProblems(row).map((p) => p.id),
@@ -1412,6 +1419,11 @@ function caseActions(row, id) {
       button.onclick = () => decide('withhold', button);
       return optionRow('', button, hint(decisionPreview(row, 'withhold', null)));
     },
+    acknowledge: () => {
+      const button = el('button', { type: 'button', className: 'btn secondary', textContent: decisionButtonLabel(row, 'acknowledge'), disabled: busy });
+      button.onclick = () => decide('acknowledge', button);
+      return optionRow('', button, hint(decisionPreview(row, 'acknowledge', null)));
+    },
   };
   for (const decision of allowed) box.append(options[decision]());
 
@@ -1424,13 +1436,20 @@ function caseActions(row, id) {
     return true;
   };
   for (const flag of flags) {
+    const says = flag.status ? ` (Stripe says: ${flag.status})` : '';
+    if (!flag.recordable) {
+      // The database's own reason, in its words.
+      box.append(optionRow('', hint(`${flag.label}${says}: `), el('span', { className: 'ids', textContent: flag.stripeId }),
+        el('span', { className: 'muted wide', textContent: `Can’t be recorded yet: ${flag.refusal}` })));
+      continue;
+    }
     const record = el('button', { type: 'button', className: 'btn navy', textContent: `Record refund${flag.cents ? ` · ${formatEuro(flag.cents)}` : ''}`, disabled: busy });
     record.onclick = () => {
       if (!noteFirst() || !confirm(recordRefundConfirmText(row, flag))) return;
       go('admin_record_external_refund', { p_booking_id: id, p_stripe_refund_id: flag.stripeId, p_note: note.value.trim() },
         record, { kind: 'record', stripeId: flag.stripeId });
     };
-    box.append(optionRow('', record, hint(`${flag.label}: `), el('span', { className: 'ids', textContent: flag.stripeId }),
+    box.append(optionRow('', record, hint(`${flag.label}${says}: `), el('span', { className: 'ids', textContent: flag.stripeId }),
       el('span', { className: 'muted wide', textContent: 'Brings the books in line with what Stripe did. Nothing is sent to Stripe. Decisions that refund wait until this is recorded.' })));
   }
 
@@ -1444,6 +1463,16 @@ function caseActions(row, id) {
       go('admin_requeue_refund', { p_booking: id, p_note: note.value.trim() }, again, { kind: 'requeue', cents: total });
     };
     box.append(optionRow('', again, hint(`${formatEuro(total)} that failed for good is asked from Stripe again, as a new refund. Uses the note above.`)));
+  }
+
+  // Only asks Stripe: the worker looks the transfer up and reports what it finds.
+  if (check) {
+    const lookup = el('button', { type: 'button', className: 'btn secondary', textContent: 'Check the transfer at Stripe', disabled: busy });
+    lookup.onclick = () => {
+      if (!noteFirst() || !confirm(checkTransferConfirmText(row))) return;
+      go('admin_check_transfer', { p_booking_id: id, p_note: note.value.trim() }, lookup, { kind: 'check' });
+    };
+    box.append(optionRow('', lookup, hint('Only asks Stripe whether the transfer exists, and adopts it if it does. No money moves. Uses the note above.')));
   }
 
   if (canReverse) {
@@ -1496,8 +1525,8 @@ async function finishCaseAction(id, token, meta, { data, error }) {
     return load();
   }
   const updated = asCaseRow(data, id);
-  // The note and the amount are spent once the database took the decision (and
-  // answered with the case) or the reversal; a retry doesn't use them.
+  // The note and the amount are spent once the database took the action and
+  // answered with the case (or, for a reversal, with anything); a retry uses neither.
   if (updated ? meta.kind !== 'retry' : meta.kind === 'reversal') drafts.delete(id);
   if (here && updated) {
     if (!rows.some((r) => caseId(r) === id)) {
@@ -1512,11 +1541,12 @@ async function finishCaseAction(id, token, meta, { data, error }) {
     return renderList(id !== selectedCase); // another case's card is left alone
   }
   if (here) {
-    // A decision, a recording or a second sending is only believed from the row it answers with; a reversal
-    // or a retry asked something the list shows afterwards.
+    // A decision, a recording or a second sending is only believed from the row it answers with; a reversal,
+    // a retry or a lookup asked something the list shows afterwards.
     const ASKED = {
       reversal: 'Reversal requested. The list was reloaded; the transfer status shows where it stands.',
       retry: 'Retry queued. The list was reloaded; refresh in a minute to see whether it worked.',
+      check: 'Lookup requested. The list was reloaded; refresh in a minute to see what Stripe says.',
     };
     problemNotice = ASKED[meta.kind]
       ? { kind: 'ok', text: ASKED[meta.kind] }

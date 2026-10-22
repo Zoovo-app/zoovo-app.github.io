@@ -263,7 +263,10 @@ export function openProblems(row) {
   return Array.isArray(list) ? list.filter((p) => isObject(p) && p.status === 'open') : [];
 }
 
-const ATTENTION = { problem: 'Problem open', refund_failed: 'Refund failed', transfer_failed: 'Transfer failed' };
+const ATTENTION = {
+  problem: 'Problem open', refund_failed: 'Refund failed', transfer_failed: 'Transfer failed',
+  payout_mismatch: 'Payout amount differs',
+};
 
 // Why a case is in the open list: '' when nothing is wrong.
 export function attentionLabel(row) {
@@ -276,7 +279,7 @@ export function isOpenCase(row) {
   return openProblems(row).length > 0 || attentionLabel(row) !== '';
 }
 
-const DECISIONS = ['full_refund', 'partial_refund', 'release', 'withhold'];
+const DECISIONS = ['full_refund', 'partial_refund', 'release', 'withhold', 'acknowledge'];
 
 // The decisions the RPC accepts for this case. The case row says so itself
 // (allowed_decisions, from the rules the RPC applies), and exactly those are
@@ -310,6 +313,19 @@ export function validateNote(note) {
   return null;
 }
 
+// The money log id the case row reflects (seen_log_id), to send back as
+// p_seen_log_id with a decision: the RPC refuses a decision when payment events
+// arrived after it ("new payment events arrived, reload"). A booking with
+// nothing in its money log has null: 0, "nothing seen", which the RPC accepts.
+// A row without the key (a database from before it) has nothing to send: null,
+// and so has a value that isn't a whole number of at least 0.
+export function seenLogId(row) {
+  if (!isObject(row)) return null;
+  const id = row.seen_log_id;
+  if (id === null) return 0;
+  return Number.isSafeInteger(id) && id >= 0 ? id : null;
+}
+
 const NO_PRICE = 'This booking has no price on record, so a refund can’t be worked out here.';
 
 // null when the decision can be sent, else the sentence to show. Mirrors
@@ -331,6 +347,10 @@ export function validateDecision(row, decision, refundCents, note) {
   }
   const noteProblem = validateNote(note);
   if (noteProblem) return noteProblem;
+  // A row that has the key but no usable value can't say what was seen: reload it rather than send a guess.
+  if (isObject(row) && Object.hasOwn(row, 'seen_log_id') && seenLogId(row) === null) {
+    return 'This case row has no usable seen_log_id: reload the list.';
+  }
   if (decision !== 'full_refund' && decision !== 'partial_refund') return null;
 
   const left = refundableCents(row);
@@ -399,6 +419,7 @@ export function suggestedRefund(row) {
 
 const JOB_KINDS = {
   refund: 'refund', transfer: 'transfer', transfer_reversal: 'transfer reversal', cancel_intent: 'payment cancellation',
+  transfer_lookup: 'transfer lookup',
 };
 
 // The payment jobs that failed: [{id, kind, label, error, retryable, refusal}].
@@ -621,10 +642,31 @@ export function transferredCents(row) {
   return Number.isInteger(cents) && cents >= 0 ? cents : null;
 }
 
-// Who is told when a decision is saved: the RPC notifies both sides only for a
-// case that had a report open; money flagged without one is closed silently.
+// A booking that was never confirmed (confirmed_at is there and null) was
+// never the pro's: the RPC tells the pro only of a booking they saw.
+const neverConfirmed = (row) => {
+  const b = bookingOf(row);
+  return Object.hasOwn(b, 'confirmed_at') && b.confirmed_at === null;
+};
+
+// Who is told when a decision is saved: the RPC notifies only for a case that
+// had a report open (money flagged without one is closed silently), and the
+// pro only for a booking they saw.
 export function notifiedText(row) {
-  return openProblems(row).length > 0 ? 'Both are notified.' : 'No one is notified.';
+  if (openProblems(row).length === 0) return 'No one is notified.';
+  return neverConfirmed(row) ? 'Only the pet parent is notified; the pro never saw this booking.' : 'Both are notified.';
+}
+
+// The line above the note: who hears of a decision. Acknowledging tells no one.
+// '' when nothing can be decided.
+export function decisionNoticeText(row) {
+  const allowed = allowedDecisions(row);
+  if (allowed.length === 0) return '';
+  if (allowed.every((d) => d === 'acknowledge')) return 'No one is notified when you acknowledge.';
+  if (openProblems(row).length === 0) return 'No one is notified when you decide: no report is open on this booking.';
+  return neverConfirmed(row)
+    ? 'Only the pet parent is notified when you decide; the pro never saw this booking.'
+    : 'Both the pet parent and the pro are notified when you decide.';
 }
 
 // The wording on a decision's button.
@@ -640,8 +682,20 @@ export function decisionButtonLabel(row, decision) {
       // A payout that was already sent can't be released any more: the decision only closes the case.
       return b.transfer_status === 'sent' ? 'Release (keep the payout)' : `Release payout${payout}`;
     case 'withhold': return `Withhold payout${payout}`;
+    case 'acknowledge': return 'Acknowledge';
     default: return '';
   }
+}
+
+// What an acknowledgement is about: the payout that differs (with the amounts
+// when the row has them), or money flagged with no report open.
+function acknowledgeSubject(row) {
+  if (!isObject(row) || row.attention !== 'payout_mismatch') return { what: 'the flagged money on this booking', mismatch: false };
+  const b = bookingOf(row);
+  const sent = transferredCents(row);
+  const owed = Number.isInteger(b.payout_cents) ? b.payout_cents : null;
+  const amounts = sent !== null && owed !== null ? ` (${formatEuro(sent)} was sent, ${formatEuro(owed)} is owed)` : '';
+  return { what: `the payout mismatch${amounts}`, mismatch: true };
 }
 
 // The sentence under a decision's button: what the reviewer should expect.
@@ -676,6 +730,10 @@ export function decisionPreview(row, decision, refundCents, now = Date.now()) {
         return `The payout of ${sentCents} was already sent to ${proName(row)}. Withholding only records the decision and takes nothing back: use Reverse transfer to take the money back.`;
       }
       return `No refund. ${pro} is not paid ${formatEuro(b.payout_cents)} for this booking.`;
+    case 'acknowledge': {
+      const { what } = acknowledgeSubject(row);
+      return `Records that the team has seen ${what} and handled it outside the app. No money moves, no report is resolved and no one is notified.`;
+    }
     default:
       return '';
   }
@@ -713,6 +771,8 @@ export function confirmText(row, decision, refundCents) {
         return `Withhold the payout of ${sentCents} from ${pro}? It was already sent: withholding only records the decision and takes nothing back (Reverse transfer does). ${notified}`;
       }
       return `Withhold the payout of ${payout} from ${pro}? They will not be paid for this booking. ${notified}`;
+    case 'acknowledge':
+      return `Acknowledge ${acknowledgeSubject(row).what}? You have handled it outside the app. It is recorded with your note; no money moves, no report is resolved and no one is notified.`;
     default:
       return '';
   }
@@ -742,12 +802,25 @@ const RECORDABLE = {
   refund_status_conflict: 'Refund Stripe reports differently',
 };
 
-// The refunds the team can record (admin_record_external_refund): a refund made
-// at Stripe that the books don't have, or one whose Stripe status disagrees
-// with them. The case row lists them in `money_flags` ({event,
-// stripe_refund_id, amount_cents}); the Stripe id comes from there and is
-// never typed. [{stripeId, event, cents, label}], each Stripe refund once.
-export function recordableRefunds(row) {
+const STRIPE_REFUND_STATUSES = {
+  succeeded: 'made', pending: 'pending', requires_action: 'needs action', failed: 'failed', canceled: 'canceled',
+};
+
+// Stripe's status of a refund in a word, null when there is none.
+export function stripeRefundStatusLabel(status) {
+  return lookup(STRIPE_REFUND_STATUSES, status, null);
+}
+
+// The Stripe refunds the books don't agree with, as the case row lists them in
+// `money_flags` ({log_id, event, stripe_refund_id, amount_cents,
+// reported_status, recordable, record_refusal}): a refund made at Stripe that
+// the books don't have, or one whose Stripe status disagrees with them. The
+// Stripe id comes from there and is never typed. [{stripeId, logId, event,
+// cents, label, status, recordable, refusal}], each Stripe refund once. A flag
+// is recordable only when the database says `recordable: true` and gives no
+// refusal; otherwise `refusal` is its reason (admin_record_external_refund
+// would refuse it with the same words).
+export function moneyFlags(row) {
   const list = isObject(row) ? row.money_flags : null;
   if (!Array.isArray(list)) return [];
   const seen = new Set();
@@ -756,15 +829,23 @@ export function recordableRefunds(row) {
     const stripeId = isObject(flag) ? trimmed(flag.stripe_refund_id) : null;
     if (!stripeId || !Object.hasOwn(RECORDABLE, flag.event) || seen.has(stripeId)) continue;
     seen.add(stripeId);
+    const given = trimmed(flag.record_refusal);
+    const recordable = flag.recordable === true && given === null;
     out.push({
-      stripeId, event: flag.event, label: RECORDABLE[flag.event],
+      stripeId,
+      logId: Number.isInteger(flag.log_id) ? flag.log_id : null,
+      event: flag.event,
+      label: RECORDABLE[flag.event],
       cents: Number.isInteger(flag.amount_cents) && flag.amount_cents > 0 ? flag.amount_cents : null,
+      status: stripeRefundStatusLabel(flag.reported_status),
+      recordable,
+      refusal: recordable ? null : given ?? 'The database did not say why this refund can’t be recorded yet.',
     });
   }
   return out;
 }
 
-// `flag` is an entry of recordableRefunds().
+// `flag` is an entry of moneyFlags().
 export function recordRefundConfirmText(row, flag) {
   const amount = flag?.cents ? ` (${formatEuro(flag.cents)})` : '';
   const nothing = 'Nothing is sent to Stripe and no one is notified.';
@@ -783,14 +864,19 @@ export function recordedText(row, sent) {
   return `Refund ${stripeId} recorded. Refunded so far: ${formatEuro(bookingOf(row).refunded_cents)}.`;
 }
 
-// The failed or canceled refunds not sent again yet (admin_requeue_refund):
-// [{amount, reason}]. A requeue makes a new refund of the same amount and
-// reason, so a later refund like that is taken as the requeue of it, whatever
-// became of it: a requeue that failed again leaves only itself to send. The
-// case row doesn't mark requeued refunds; the database refuses what has none
-// to send.
+// The failed or canceled refunds that admin_requeue_refund would send again:
+// [{amount, reason}]. The case row says so itself (refunds[].requeueable, from
+// the rule the RPC applies: not sent again already, not reported made by
+// Stripe, and a booking that allows it), and exactly those are listed. Only a
+// row without the key falls back to a guess: a requeue makes a new refund of the
+// same amount and reason, so a later refund like that is taken as the requeue
+// of it, whatever became of it (a requeue that failed again leaves only itself
+// to send). The database refuses what has none to send.
 export function requeueableRefunds(row) {
   const list = (isObject(row) && Array.isArray(row.refunds) ? row.refunds : []).filter(isObject);
+  if (list.some((r) => typeof r.requeueable === 'boolean')) {
+    return list.filter((r) => r.requeueable === true).map((r) => ({ amount: r.amount_cents, reason: r.reason }));
+  }
   const out = [];
   list.forEach((r, i) => {
     if (r.status !== 'failed' && r.status !== 'canceled') return;
@@ -801,10 +887,13 @@ export function requeueableRefunds(row) {
   return out;
 }
 
-// Sending refunds again is offered when there are some, and no Stripe refund
-// waits to be recorded first (the database refuses it then).
+// Sending refunds again is offered when there are some. Without the server's
+// answer it also waits for a Stripe refund that must be recorded first (the
+// database refuses it then).
 export function canRequeue(row) {
-  return requeueableRefunds(row).length > 0 && recordableRefunds(row).length === 0;
+  const list = isObject(row) && Array.isArray(row.refunds) ? row.refunds : [];
+  const served = list.some((r) => isObject(r) && typeof r.requeueable === 'boolean');
+  return requeueableRefunds(row).length > 0 && (served || moneyFlags(row).length === 0);
 }
 
 export function requeueConfirmText(row) {
@@ -824,6 +913,24 @@ export function requeuedText(row, sent) {
   return `Refund sent again: ${formatEuro(sent.cents)} is queued; its status is below.`;
 }
 
+// ---- Checking a transfer at Stripe ---------------------------------------------
+
+// admin_check_transfer asks the worker to look the booking's transfer up at
+// Stripe. It is offered where the case shows a transfer that failed or has no
+// known outcome (attention transfer_failed, or a failed transfer or lookup job)
+// or a payout that differs from what was sent (payout_mismatch, a lookup
+// conflict included). The database refuses it for a booking with no transfer,
+// or while one is being sent, and the page shows that message.
+export function canCheckTransfer(row) {
+  if (!isObject(row)) return false;
+  if (row.attention === 'transfer_failed' || row.attention === 'payout_mismatch') return true;
+  return failedJobs(row).some((j) => j.kind === 'transfer' || j.kind === 'transfer_lookup');
+}
+
+export function checkTransferConfirmText(row) {
+  return `Ask Stripe whether the transfer to ${proName(row)} exists? The worker only looks it up and reports what it finds. Nothing is sent to the pro and no money moves.`;
+}
+
 // ---- What came back ----------------------------------------------------------
 
 // admin_resolve_booking_problems answers with the case row. It is used only
@@ -841,6 +948,12 @@ export function asCaseRow(value, bookingId) {
 // no problem is open in the answer; otherwise it is null and the page must not
 // claim anything. A queued refund is mentioned only when this decision made one.
 export function savedText(row, sent) {
+  // Acknowledging resolves no problem (a report may well stay open): the proof is
+  // that the database no longer offers it on the returned row.
+  if (isObject(row) && isObject(sent) && sent.decision === 'acknowledge') {
+    return Array.isArray(row.allowed_decisions) && !row.allowed_decisions.includes('acknowledge')
+      ? 'Acknowledged: the team has seen it and handled it outside the app. No money moved.' : null;
+  }
   if (!isObject(row) || openProblems(row).length > 0 || !isObject(sent)) return null;
   const ids = Array.isArray(sent.ids) ? sent.ids : [];
   if (ids.length === 0) return savedFlagText(row, sent);
@@ -881,6 +994,11 @@ function savedFlagText(row, sent) {
 // amount; its message names the field.
 export function saveErrorText(error) {
   const message = trimmed(error?.message);
+  // A decision made on a case that has moved on (M4-R17): the reviewer must read it again.
+  if (/new payment events arrived/i.test(message ?? '')) {
+    return 'Couldn’t save: new payment events arrived on this booking while you were looking at it.';
+  }
+  if (/stale or foreign case row/i.test(message ?? '')) return 'Couldn’t save: this case row is out of date.';
   if (error?.hint === 'invalid_input' || /invalid_input/.test(message ?? '')) {
     const named = message && message !== 'invalid_input' ? ` (${message})` : ' (invalid_input)';
     return `Couldn’t save: the server refused it${named}. Another reviewer may have decided this case already, or the note or amount isn’t valid.`;
