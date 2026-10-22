@@ -276,10 +276,17 @@ export function isOpenCase(row) {
   return openProblems(row).length > 0 || attentionLabel(row) !== '';
 }
 
-// The decisions the RPC accepts for this case. A card dispute can't be
-// refunded, so a case with an open dispute only allows release or withhold.
-// With nothing open there is nothing to decide.
+const DECISIONS = ['full_refund', 'partial_refund', 'release', 'withhold'];
+
+// The decisions the RPC accepts for this case. The case row says so itself
+// (allowed_decisions, from the rules the RPC applies), and exactly those are
+// offered, in the server's order. Only a row without that key (a database from
+// before it) falls back to the old rule: a card dispute can't be refunded, so a
+// case with an open dispute only allows release or withhold, and with nothing
+// open there is nothing to decide.
 export function allowedDecisions(row) {
+  const served = isObject(row) ? row.allowed_decisions : undefined;
+  if (Array.isArray(served)) return [...new Set(served.filter((d) => DECISIONS.includes(d)))];
   const open = openProblems(row);
   if (open.length === 0) return [];
   return open.some((p) => p.kind === 'dispute') ? ['release', 'withhold'] : ['full_refund', 'partial_refund', 'release'];
@@ -312,7 +319,11 @@ const NO_PRICE = 'This booking has no price on record, so a refund can’t be wo
 export function validateDecision(row, decision, refundCents, note) {
   const allowed = allowedDecisions(row);
   if (!allowed.includes(decision)) {
-    if (allowed.length === 0) return 'This case has no open problem to decide.';
+    if (allowed.length === 0) {
+      return isObject(row) && Array.isArray(row.allowed_decisions)
+        ? 'No decision can be made on this case right now.'
+        : 'This case has no open problem to decide.';
+    }
     const why = decision === 'withhold' ? ' Withholding needs a card dispute.'
       : (decision === 'full_refund' || decision === 'partial_refund') && allowed.includes('withhold')
         ? ' A disputed charge can only be released or withheld.' : '';
@@ -390,19 +401,25 @@ const JOB_KINDS = {
   refund: 'refund', transfer: 'transfer', transfer_reversal: 'transfer reversal', cancel_intent: 'payment cancellation',
 };
 
-// The payment jobs that failed and can be retried: [{id, kind, label, error}].
-// The case row names them in `failed_jobs` ({id, kind, last_error}); a retry
-// needs a job id (admin_retry_payment_job), and without one there is nothing
-// to retry from here.
+// The payment jobs that failed: [{id, kind, label, error, retryable, refusal}].
+// The case row names them in `failed_jobs` ({id, kind, last_error, retryable,
+// retry_refusal}). The database decides whether a retry is accepted
+// (payment_job_retry_refusal): only `retryable: true`, without a refusal, is
+// a yes. Otherwise `refusal` says why, when it said.
 export function failedJobs(row) {
   const list = isObject(row) ? row.failed_jobs : null;
   if (!Array.isArray(list)) return [];
-  return list.filter((j) => isObject(j) && typeof j.id === 'string' && j.id !== '').map((j) => ({
-    id: j.id,
-    kind: typeof j.kind === 'string' ? j.kind : null,
-    label: typeof j.kind === 'string' && Object.hasOwn(JOB_KINDS, j.kind) ? JOB_KINDS[j.kind] : 'payment job',
-    error: trimmed(j.last_error),
-  }));
+  return list.filter((j) => isObject(j) && typeof j.id === 'string' && j.id !== '').map((j) => {
+    const refusal = trimmed(j.retry_refusal);
+    return {
+      id: j.id,
+      kind: typeof j.kind === 'string' ? j.kind : null,
+      label: typeof j.kind === 'string' && Object.hasOwn(JOB_KINDS, j.kind) ? JOB_KINDS[j.kind] : 'payment job',
+      error: trimmed(j.last_error),
+      retryable: j.retryable === true && refusal === null,
+      refusal,
+    };
+  });
 }
 
 // ---- Words for the case ----------------------------------------------------
@@ -414,6 +431,7 @@ const PROBLEM_KINDS = {
   customer_no_show: 'The customer didn’t show up',
   dispute: 'Card dispute',
   suspension: 'The pro was suspended',
+  refund_failed: 'Refund failed',
 };
 
 export function problemKindLabel(kind) {
@@ -460,7 +478,7 @@ export function disputeStatusLabel(status) {
 const REFUND_REASONS = {
   policy: 'Cancellation policy', pro_cancelled: 'The pro cancelled', slot_taken: 'The time was taken',
   payment_mismatch: 'Payment didn’t match', account_deleted: 'Account deleted',
-  pro_suspended: 'The pro was suspended', team: 'Team decision',
+  pro_suspended: 'The pro was suspended', team: 'Team decision', hold_expired: 'Payment too late',
 };
 const REFUND_STATUSES = {
   requested: 'Queued', pending: 'Pending', succeeded: 'Refunded', failed: 'Failed', canceled: 'Canceled',
@@ -595,7 +613,36 @@ export function cancellationText(booking) {
 
 const customerName = (row) => trimmed(row?.customer?.name) ?? 'the pet parent';
 const proName = (row) => trimmed(row?.pro?.display_name) ?? 'the pro';
-const NOTIFIED = 'Both are notified.';
+
+// What was transferred to the pro (booking.transferred_cents, set while the
+// transfer is sent or reversed), or null when the case row doesn't say.
+export function transferredCents(row) {
+  const cents = bookingOf(row).transferred_cents;
+  return Number.isInteger(cents) && cents >= 0 ? cents : null;
+}
+
+// Who is told when a decision is saved: the RPC notifies both sides only for a
+// case that had a report open; money flagged without one is closed silently.
+export function notifiedText(row) {
+  return openProblems(row).length > 0 ? 'Both are notified.' : 'No one is notified.';
+}
+
+// The wording on a decision's button.
+export function decisionButtonLabel(row, decision) {
+  const b = bookingOf(row);
+  const payout = b.payout_cents > 0 ? ` · ${formatEuro(b.payout_cents)}` : '';
+  switch (decision) {
+    case 'full_refund': return `Refund in full · ${formatEuro(refundableCents(row) ?? 0)}`;
+    case 'partial_refund': return 'Refund part';
+    case 'release':
+      // With no report open, release is how a flag on the booking's money leaves the list.
+      if (openProblems(row).length === 0) return 'Clear flag (no refund)';
+      // A payout that was already sent can't be released any more: the decision only closes the case.
+      return b.transfer_status === 'sent' ? 'Release (keep the payout)' : `Release payout${payout}`;
+    case 'withhold': return `Withhold payout${payout}`;
+    default: return '';
+  }
+}
 
 // The sentence under a decision's button: what the reviewer should expect.
 // '' when the decision or the amount isn't one the database would accept.
@@ -605,6 +652,7 @@ export function decisionPreview(row, decision, refundCents, now = Date.now()) {
   const customer = upperFirst(customerName(row));
   const pro = upperFirst(proName(row));
   const left = refundableCents(row);
+  const sentCents = formatEuro(transferredCents(row) ?? b.payout_cents);
   switch (decision) {
     case 'full_refund':
       if (!left) return '';
@@ -614,14 +662,19 @@ export function decisionPreview(row, decision, refundCents, now = Date.now()) {
       return split ? `${customer} gets ${formatEuro(refundCents)} back. ${pro} receives ${formatEuro(split.payout)} and Zoovo keeps ${formatEuro(split.commission)}.` : '';
     }
     case 'release':
-      if (b.transfer_status === 'sent') return `No refund. The payout of ${formatEuro(b.payout_cents)} was already sent to ${proName(row)}.`;
+      if (openProblems(row).length === 0) {
+        return 'No refund. This clears the flag on the booking’s money. A payout that is on hold goes back to pending.';
+      }
+      if (b.transfer_status === 'sent') return `No refund. The payout of ${sentCents} was already sent to ${proName(row)}.`;
       if (!(b.payout_cents > 0)) return 'No refund and no payout is due; this only closes the case.';
       if (Date.parse(b.payout_due_at) > now) {
         return `No refund. ${pro} is paid ${formatEuro(b.payout_cents)} once it is due (${whenLabel(b.payout_due_at)}).`;
       }
       return `No refund. ${pro} is paid ${formatEuro(b.payout_cents)} at the next payout run.`;
     case 'withhold':
-      if (b.transfer_status === 'sent') return 'Marks the payout as withheld. It does not take back money that was already sent: use Reverse transfer for that.';
+      if (b.transfer_status === 'sent') {
+        return `The payout of ${sentCents} was already sent to ${proName(row)}. Withholding only records the decision and takes nothing back: use Reverse transfer to take the money back.`;
+      }
       return `No refund. ${pro} is not paid ${formatEuro(b.payout_cents)} for this booking.`;
     default:
       return '';
@@ -635,38 +688,140 @@ export function confirmText(row, decision, refundCents) {
   const customer = customerName(row);
   const pro = proName(row);
   const payout = formatEuro(b.payout_cents);
+  const sentCents = formatEuro(transferredCents(row) ?? b.payout_cents);
+  const notified = notifiedText(row);
   switch (decision) {
     case 'full_refund': {
       const left = refundableCents(row);
       if (!left) return '';
-      return `Refund ${formatEuro(left)} in full to ${customer}? ${upperFirst(pro)} will receive nothing for this booking. ${NOTIFIED} A refund can’t be taken back.`;
+      return `Refund ${formatEuro(left)} in full to ${customer}? ${upperFirst(pro)} will receive nothing for this booking. ${notified} A refund can’t be taken back.`;
     }
     case 'partial_refund': {
       const split = splitAfterMore(row, refundCents);
       if (!split) return '';
-      return `Refund ${formatEuro(refundCents)} to ${customer}? ${upperFirst(pro)} will receive ${formatEuro(split.payout)} and Zoovo keeps ${formatEuro(split.commission)}. ${NOTIFIED} A refund can’t be taken back.`;
+      return `Refund ${formatEuro(refundCents)} to ${customer}? ${upperFirst(pro)} will receive ${formatEuro(split.payout)} and Zoovo keeps ${formatEuro(split.commission)}. ${notified} A refund can’t be taken back.`;
     }
     case 'release':
-      if (b.transfer_status === 'sent') return `Close this case with no refund? The payout of ${payout} was already sent to ${pro}. ${NOTIFIED}`;
-      if (!(b.payout_cents > 0)) return `Close this case with no refund and no payout? ${NOTIFIED}`;
-      return `Release the payout of ${payout} to ${pro}, with no refund? ${NOTIFIED}`;
+      if (openProblems(row).length === 0) {
+        return `Clear the flag on this booking with no refund? A payout that is on hold goes back to pending. ${notified}`;
+      }
+      if (b.transfer_status === 'sent') return `Close this case with no refund? The payout of ${sentCents} was already sent to ${pro}. ${notified}`;
+      if (!(b.payout_cents > 0)) return `Close this case with no refund and no payout? ${notified}`;
+      return `Release the payout of ${payout} to ${pro}, with no refund? ${notified}`;
     case 'withhold':
       if (b.transfer_status === 'sent') {
-        return `Withhold the payout of ${payout} from ${pro}? The transfer was already sent, and this does not take it back (Reverse transfer does). ${NOTIFIED}`;
+        return `Withhold the payout of ${sentCents} from ${pro}? It was already sent: withholding only records the decision and takes nothing back (Reverse transfer does). ${notified}`;
       }
-      return `Withhold the payout of ${payout} from ${pro}? They will not be paid for this booking. ${NOTIFIED}`;
+      return `Withhold the payout of ${payout} from ${pro}? They will not be paid for this booking. ${notified}`;
     default:
       return '';
   }
 }
 
+// The reversal takes back what was transferred (transferred_cents), which can
+// differ from the booking's payout; with no amount in the row none is named.
+export function reverseLabel(row) {
+  const sent = transferredCents(row);
+  return `Reverse transfer${sent === null ? '' : ` · ${formatEuro(sent)}`}`;
+}
+
 export function reverseConfirmText(row) {
-  return `Reverse the transfer of ${formatEuro(bookingOf(row).payout_cents)} to ${proName(row)}? The money is taken back from their Stripe account.`;
+  const sent = transferredCents(row);
+  return `Reverse the transfer${sent === null ? '' : ` of ${formatEuro(sent)}`} to ${proName(row)}? The money is taken back from their Stripe account.`;
 }
 
 // `job` is an entry of failedJobs().
 export function retryConfirmText(job) {
   return `Retry the failed ${job?.label ?? 'payment job'}? Stripe receives it again with the same key, so it can’t happen twice.`;
+}
+
+// ---- Refunds made outside, and refunds that failed for good -------------------
+
+const RECORDABLE = {
+  refund_external: 'Refund made outside Zoovo',
+  refund_status_conflict: 'Refund Stripe reports differently',
+};
+
+// The refunds the team can record (admin_record_external_refund): a refund made
+// at Stripe that the books don't have, or one whose Stripe status disagrees
+// with them. The case row lists them in `money_flags` ({event,
+// stripe_refund_id, amount_cents}); the Stripe id comes from there and is
+// never typed. [{stripeId, event, cents, label}], each Stripe refund once.
+export function recordableRefunds(row) {
+  const list = isObject(row) ? row.money_flags : null;
+  if (!Array.isArray(list)) return [];
+  const seen = new Set();
+  const out = [];
+  for (const flag of list) {
+    const stripeId = isObject(flag) ? trimmed(flag.stripe_refund_id) : null;
+    if (!stripeId || !Object.hasOwn(RECORDABLE, flag.event) || seen.has(stripeId)) continue;
+    seen.add(stripeId);
+    out.push({
+      stripeId, event: flag.event, label: RECORDABLE[flag.event],
+      cents: Number.isInteger(flag.amount_cents) && flag.amount_cents > 0 ? flag.amount_cents : null,
+    });
+  }
+  return out;
+}
+
+// `flag` is an entry of recordableRefunds().
+export function recordRefundConfirmText(row, flag) {
+  const amount = flag?.cents ? ` (${formatEuro(flag.cents)})` : '';
+  const nothing = 'Nothing is sent to Stripe and no one is notified.';
+  if (flag?.event === 'refund_external') {
+    return `Record Stripe refund ${flag.stripeId}${amount} as a refund made outside Zoovo? It is counted in the refunded amount and the payout split. ${nothing}`;
+  }
+  return `Record what Stripe reports for refund ${flag?.stripeId}${amount}? Zoovo’s books are brought in line with Stripe, so the refunded amount and the payout can change. ${nothing}`;
+}
+
+// The banner after recording: true only if the returned row no longer lists
+// that Stripe refund. `sent` is {stripeId}.
+export function recordedText(row, sent) {
+  const stripeId = trimmed(sent?.stripeId);
+  if (!isObject(row) || !stripeId || !Array.isArray(row.money_flags)) return null;
+  if (row.money_flags.some((f) => isObject(f) && trimmed(f.stripe_refund_id) === stripeId)) return null;
+  return `Refund ${stripeId} recorded. Refunded so far: ${formatEuro(bookingOf(row).refunded_cents)}.`;
+}
+
+// The failed or canceled refunds not sent again yet (admin_requeue_refund):
+// [{amount, reason}]. A requeue makes a new refund of the same amount and
+// reason, so a later refund like that is taken as the requeue of it, whatever
+// became of it: a requeue that failed again leaves only itself to send. The
+// case row doesn't mark requeued refunds; the database refuses what has none
+// to send.
+export function requeueableRefunds(row) {
+  const list = (isObject(row) && Array.isArray(row.refunds) ? row.refunds : []).filter(isObject);
+  const out = [];
+  list.forEach((r, i) => {
+    if (r.status !== 'failed' && r.status !== 'canceled') return;
+    if (!list.some((o, j) => j > i && o.amount_cents === r.amount_cents && o.reason === r.reason)) {
+      out.push({ amount: r.amount_cents, reason: r.reason });
+    }
+  });
+  return out;
+}
+
+// Sending refunds again is offered when there are some, and no Stripe refund
+// waits to be recorded first (the database refuses it then).
+export function canRequeue(row) {
+  return requeueableRefunds(row).length > 0 && recordableRefunds(row).length === 0;
+}
+
+export function requeueConfirmText(row) {
+  const refunds = requeueableRefunds(row);
+  if (refunds.length === 0) return '';
+  const total = refunds.reduce((sum, r) => sum + (Number.isInteger(r.amount) ? r.amount : 0), 0);
+  const customer = customerName(row);
+  return refunds.length === 1
+    ? `Send the failed refund of ${formatEuro(total)} again to ${customer}? It goes to Stripe as a new refund request. A refund can’t be taken back.`
+    : `Send ${refunds.length} failed refunds again (${formatEuro(total)} in all) to ${customer}? Each goes to Stripe as a new refund request. A refund can’t be taken back.`;
+}
+
+// The banner after sending again: true only if nothing is left to send again.
+// `sent` is {cents}, what was offered.
+export function requeuedText(row, sent) {
+  if (!isObject(row) || !Number.isInteger(sent?.cents) || requeueableRefunds(row).length > 0) return null;
+  return `Refund sent again: ${formatEuro(sent.cents)} is queued; its status is below.`;
 }
 
 // ---- What came back ----------------------------------------------------------
@@ -688,6 +843,7 @@ export function asCaseRow(value, bookingId) {
 export function savedText(row, sent) {
   if (!isObject(row) || openProblems(row).length > 0 || !isObject(sent)) return null;
   const ids = Array.isArray(sent.ids) ? sent.ids : [];
+  if (ids.length === 0) return savedFlagText(row, sent);
   const problems = Array.isArray(row.problems) ? row.problems.filter(isObject) : [];
   const closed = problems.filter((p) => ids.includes(p.id) && p.status === 'resolved');
   if (ids.length === 0 || closed.length !== ids.length || !closed.every((p) => p.resolution === sent.decision)) return null;
@@ -699,6 +855,23 @@ export function savedText(row, sent) {
   const queued = (sent.decision === 'full_refund' || sent.decision === 'partial_refund')
     && refunds.some((r) => isObject(r) && r.reason === 'team' && (r.status === 'requested' || r.status === 'pending')
       && (!Number.isInteger(cents) || r.amount_cents === cents));
+  return `Decision saved: ${said}.${queued ? ' The refund is queued; its status is below.' : ''}`;
+}
+
+// A decision on a case with no report open (money was flagged): there were no
+// problems to see resolved, so the proof is in the returned row: the database
+// allows no decision on it any more, and for a refund the booking's refunded
+// amount grew by what was sent (`cents`, from `refundedBefore`).
+function savedFlagText(row, sent) {
+  if (!Array.isArray(row.allowed_decisions) || row.allowed_decisions.length > 0) return null;
+  if (sent.decision === 'release') return 'Decision saved: the flag is cleared, no refund.';
+  if (sent.decision !== 'full_refund' && sent.decision !== 'partial_refund') return null;
+  const { cents, refundedBefore } = sent;
+  if (!Number.isInteger(cents) || !Number.isInteger(refundedBefore) || bookingOf(row).refunded_cents !== refundedBefore + cents) return null;
+  const refunds = Array.isArray(row.refunds) ? row.refunds : [];
+  const queued = refunds.some((r) => isObject(r) && r.reason === 'team' && r.amount_cents === cents
+    && (r.status === 'requested' || r.status === 'pending'));
+  const said = sent.decision === 'full_refund' ? 'Refunded in full' : `Refunded ${formatEuro(cents)}`;
   return `Decision saved: ${said}.${queued ? ' The refund is queued; its status is below.' : ''}`;
 }
 

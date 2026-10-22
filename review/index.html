@@ -193,13 +193,15 @@ table.cases{width:100%;min-width:760px;border-collapse:collapse;font-size:14px}
 <script type="module">
 import { supabaseClient } from '/assets/supabase.js';
 import {
-  PRO_SORTS, allowedDecisions, asCaseRow, attentionLabel, bookingWhen, cancelRate, cancellationRows,
-  cancellationText, caseItems, centsToInput, chatLines, confirmText, createRequestTracker, decisionPreview, durationLabel,
-  failedJobs, formatEuro, isOpenCase, kvkUrl, methodLabel, openProblems, parseEuroToCents,
-  paymentStatusLabel, problemDetails, proSubline, reasonCounts, refundRows, refundableCents,
-  retryConfirmText, reverseConfirmText, saveErrorText, savedText, sortPros, stateText,
-  stripeTypeNote, suggestedRefund, transferLabel, validateDecision, validateNote, verificationBadges,
-  waitingSince, whenLabel,
+  PRO_SORTS, allowedDecisions, asCaseRow, attentionLabel, bookingWhen, canRequeue, cancelRate,
+  cancellationRows, cancellationText, caseItems, centsToInput, chatLines, confirmText,
+  createRequestTracker, decisionButtonLabel, decisionPreview, durationLabel, failedJobs, formatEuro,
+  isOpenCase, kvkUrl, methodLabel, openProblems, parseEuroToCents, paymentStatusLabel, problemDetails,
+  proSubline, reasonCounts, recordRefundConfirmText, recordableRefunds, recordedText, refundRows,
+  refundableCents, requeueConfirmText, requeueableRefunds, requeuedText, retryConfirmText,
+  reverseConfirmText, reverseLabel, saveErrorText, savedText, sortPros, stateText, stripeTypeNote,
+  suggestedRefund, transferLabel, validateDecision, validateNote, verificationBadges, waitingSince,
+  whenLabel,
 } from '/review/lib.js';
 
 // Applicants choose their avatar URL (the database only checks for https), so
@@ -1129,9 +1131,10 @@ function caseTableRow(row) {
   // resolved; a reversal or a retry is only queued, the worker still has to do it.
   const saved = savedCases.get(id);
   const closed = saved !== undefined && !isOpenCase(row);
-  const attention = attentionLabel(row) || (closed ? (saved.kind === 'decision' ? 'Resolved' : 'Queued') : '—');
+  const SAVED_LABEL = { decision: 'Resolved', record: 'Recorded' }; // the others are only queued: the worker still has to act
+  const attention = attentionLabel(row) || (closed ? (SAVED_LABEL[saved.kind] ?? 'Queued') : '—');
   const failed = row.attention === 'refund_failed' || row.attention === 'transfer_failed';
-  const need = closed && saved.kind === 'decision' ? 'need done' : failed ? 'need bad' : 'need';
+  const need = closed && SAVED_LABEL[saved.kind] ? 'need done' : failed ? 'need bad' : 'need';
 
   const pick = (item) => {
     const button = el('button', { type: 'button', className: 'linkish', textContent: item.who });
@@ -1186,7 +1189,13 @@ function caseCard(row) {
         : notice('warn', 'The server answered, but not with the decision that was sent. Check the state below before you do anything else.'))
       : saved.kind === 'reversal'
         ? notice('ok', `Reversal requested. Transfer status now: ${transferLabel(b.transfer_status)}.`)
-        : notice('ok', 'Retry queued. The job runs again; refresh in a minute to see whether it worked.');
+        : saved.kind === 'record'
+          ? (recordedText(row, saved) ? notice('ok', recordedText(row, saved))
+            : notice('warn', 'The server answered, but that Stripe refund is still listed. Check the state below before you do anything else.'))
+          : saved.kind === 'requeue'
+            ? (requeuedText(row, saved) ? notice('ok', requeuedText(row, saved))
+              : notice('warn', 'The server answered, but a refund is still waiting to be sent again. Check the state below before you do anything else.'))
+            : notice('ok', 'Retry queued. The job runs again; refresh in a minute to see whether it worked.');
 
   const cancelled = cancellationText(b);
   const refunds = refundRows(row);
@@ -1291,14 +1300,21 @@ function chatPanel(row, id) {
 // The decisions, the reversal and the retries of one case.
 function caseActions(row, id) {
   const b = row.booking ?? {};
+  // Exactly the decisions the case row lists (allowed_decisions): the database applies the same rules.
   const allowed = allowedDecisions(row);
-  // The database has just answered for this case: the reversal and the retry
-  // wait for the next load, so they can't be asked for on a state that is already moving.
+  // The database has just answered for this case: the reversal, the retry, the
+  // recording and the second sending wait for the next load, so none can be
+  // asked for on a state that is already moving.
   const justSaved = savedCases.has(id);
   const jobs = justSaved ? [] : failedJobs(row);
+  const flags = justSaved ? [] : recordableRefunds(row); // Stripe refunds the books don't have
+  const requeue = !justSaved && canRequeue(row);
   const canReverse = !justSaved && b.transfer_status === 'sent';
-  const moneyFailed = !justSaved && (row.attention === 'refund_failed' || row.attention === 'transfer_failed');
-  if (!allowed.length && !canReverse && !jobs.length && !moneyFailed) return null;
+  // Only a database that doesn't list its failed jobs leaves a failure unexplained.
+  const moneyFailed = !justSaved && !Array.isArray(row.failed_jobs)
+    && (row.attention === 'refund_failed' || row.attention === 'transfer_failed');
+  const needsNote = allowed.length > 0 || canReverse || flags.length > 0 || requeue;
+  if (!needsNote && !jobs.length && !moneyFailed) return null;
 
   const busy = requests.isBusy(id); // a request for this case is still on its way
   const draft = drafts.get(id) ?? {}; // what was typed here before the list was drawn again
@@ -1328,9 +1344,11 @@ function caseActions(row, id) {
   // The note first: it is the top of the form.
   const refuse = (message, field) => { formError.textContent = message; field?.focus(); };
 
-  if (allowed.length || canReverse) {
+  if (needsNote) {
     box.append(el('label', {}, 'Note (required, saved with the action)', note),
-      el('span', { className: 'muted', textContent: 'Both the pet parent and the pro are notified when you decide.' }),
+      allowed.length ? el('span', { className: 'muted', textContent: openProblems(row).length > 0
+        ? 'Both the pet parent and the pro are notified when you decide.'
+        : 'No one is notified when you decide: no report is open on this booking.' }) : null,
       formError);
   }
   if (allowed.length) {
@@ -1352,13 +1370,14 @@ function caseActions(row, id) {
     if (!confirm(confirmText(row, decision, cents))) return;
     go('admin_resolve_booking_problems',
       { p_booking_id: id, p_decision: decision, p_refund_cents: cents, p_note: note.value.trim() }, button,
-      // The problems open on the card that was on screen: the answer must have closed these.
-      { kind: 'decision', decision, ids: openProblems(row).map((p) => p.id) });
+      // The problems open on the card that was on screen: the answer must have closed these. A case with
+      // none open is checked by the refund it asked for (cents, on top of what was refunded before).
+      { kind: 'decision', decision, ids: openProblems(row).map((p) => p.id),
+        cents: decision === 'full_refund' ? left : cents, refundedBefore: b.refunded_cents ?? 0 });
   };
-  const payoutText = b.payout_cents > 0 ? ` · ${formatEuro(b.payout_cents)}` : '';
   const options = {
     full_refund: () => {
-      const button = el('button', { type: 'button', className: 'btn secondary', textContent: `Refund in full · ${formatEuro(left)}`, disabled: busy });
+      const button = el('button', { type: 'button', className: 'btn secondary', textContent: decisionButtonLabel(row, 'full_refund'), disabled: busy });
       button.onclick = () => decide('full_refund', button);
       return optionRow('', button, hint(decisionPreview(row, 'full_refund', null) || 'Nothing is left to refund.'));
     },
@@ -1366,7 +1385,7 @@ function caseActions(row, id) {
       const suggestion = suggestedRefund(row);
       // What was typed before wins over the suggestion, even if it was cleared.
       amount.value = draft.amount ?? (suggestion ? centsToInput(suggestion) : '');
-      const button = el('button', { type: 'button', className: 'btn', textContent: 'Refund part', disabled: busy });
+      const button = el('button', { type: 'button', className: 'btn', textContent: decisionButtonLabel(row, 'partial_refund'), disabled: busy });
       button.onclick = () => decide('partial_refund', button);
       const preview = hint('');
       const update = () => {
@@ -1384,40 +1403,72 @@ function caseActions(row, id) {
         suggestion ? el('span', { className: 'muted wide', textContent: `Suggested ${formatEuro(suggestion)}: the cancellation policy applied at the start time, minus what was already refunded.` }) : null);
     },
     release: () => {
-      // A payout that was already sent can't be released any more: the decision only closes the case.
-      const label = b.transfer_status === 'sent' ? 'Release (keep the payout)' : `Release payout${payoutText}`;
-      const button = el('button', { type: 'button', className: 'btn navy', textContent: label, disabled: busy });
+      const button = el('button', { type: 'button', className: 'btn navy', textContent: decisionButtonLabel(row, 'release'), disabled: busy });
       button.onclick = () => decide('release', button);
       return optionRow('', button, hint(decisionPreview(row, 'release', null)));
     },
     withhold: () => {
-      const button = el('button', { type: 'button', className: 'btn secondary', textContent: `Withhold payout${payoutText}`, disabled: busy });
+      const button = el('button', { type: 'button', className: 'btn secondary', textContent: decisionButtonLabel(row, 'withhold'), disabled: busy });
       button.onclick = () => decide('withhold', button);
       return optionRow('', button, hint(decisionPreview(row, 'withhold', null)));
     },
   };
   for (const decision of allowed) box.append(options[decision]());
 
+  // A refund made at Stripe that the books don't have (or whose status they disagree with). The Stripe id comes
+  // from the case, shown as text; the note is the reviewer's.
+  const noteFirst = () => {
+    const problem = validateNote(note.value);
+    if (problem) { refuse(problem, note); return false; }
+    formError.textContent = '';
+    return true;
+  };
+  for (const flag of flags) {
+    const record = el('button', { type: 'button', className: 'btn navy', textContent: `Record refund${flag.cents ? ` · ${formatEuro(flag.cents)}` : ''}`, disabled: busy });
+    record.onclick = () => {
+      if (!noteFirst() || !confirm(recordRefundConfirmText(row, flag))) return;
+      go('admin_record_external_refund', { p_booking_id: id, p_stripe_refund_id: flag.stripeId, p_note: note.value.trim() },
+        record, { kind: 'record', stripeId: flag.stripeId });
+    };
+    box.append(optionRow('', record, hint(`${flag.label}: `), el('span', { className: 'ids', textContent: flag.stripeId }),
+      el('span', { className: 'muted wide', textContent: 'Brings the books in line with what Stripe did. Nothing is sent to Stripe. Decisions that refund wait until this is recorded.' })));
+  }
+
+  // Refunds that failed for good are not retried by themselves: a new refund request takes their place.
+  if (requeue) {
+    const refunds = requeueableRefunds(row);
+    const total = refunds.reduce((sum, r) => sum + (Number.isInteger(r.amount) ? r.amount : 0), 0);
+    const again = el('button', { type: 'button', className: 'btn secondary', textContent: refunds.length === 1 ? 'Send the failed refund again' : `Send ${refunds.length} failed refunds again`, disabled: busy });
+    again.onclick = () => {
+      if (!noteFirst() || !confirm(requeueConfirmText(row))) return;
+      go('admin_requeue_refund', { p_booking: id, p_note: note.value.trim() }, again, { kind: 'requeue', cents: total });
+    };
+    box.append(optionRow('', again, hint(`${formatEuro(total)} that failed for good is asked from Stripe again, as a new refund. Uses the note above.`)));
+  }
+
   if (canReverse) {
-    const reverse = el('button', { type: 'button', className: 'btn secondary', textContent: `Reverse transfer · ${formatEuro(b.payout_cents)}`, disabled: busy });
+    const reverse = el('button', { type: 'button', className: 'btn secondary', textContent: reverseLabel(row), disabled: busy });
     reverse.onclick = () => {
-      const problem = validateNote(note.value);
-      if (problem) return refuse(problem, note);
-      formError.textContent = '';
-      if (!confirm(reverseConfirmText(row))) return;
+      if (!noteFirst() || !confirm(reverseConfirmText(row))) return;
       go('admin_reverse_transfer', { p_booking_id: id, p_note: note.value.trim() }, reverse, { kind: 'reversal' });
     };
     box.append(optionRow('', reverse, hint('Takes the money back from the pro’s Stripe account. Uses the note above.')));
   }
 
+  // Retry only what the database says it will accept; for the rest, its reason.
   for (const job of jobs) {
+    const failedWith = job.error ? `Failed with: ${job.error}` : '';
+    if (!job.retryable) {
+      box.append(optionRow('', hint(`Can’t retry the ${job.label}: ${job.refusal ?? 'the database did not say why'}.${failedWith ? ` ${failedWith}` : ''}`)));
+      continue;
+    }
     const retry = el('button', { type: 'button', className: 'btn navy', textContent: `Retry the ${job.label}`, disabled: busy });
     retry.onclick = () => {
       if (!confirm(retryConfirmText(job))) return;
       formError.textContent = '';
       go('admin_retry_payment_job', { p_job_id: job.id }, retry, { kind: 'retry' });
     };
-    box.append(optionRow('', retry, hint(job.error ? `Failed with: ${job.error}` : 'This job failed. Retrying sends it again with the same key.')));
+    box.append(optionRow('', retry, hint(failedWith || 'This job failed. Retrying sends it again with the same key.')));
   }
   if (moneyFailed && !jobs.length) {
     box.append(el('span', { className: 'muted', textContent: 'A refund or transfer failed, but the database did not say which job, so it can’t be retried from here.' }));
@@ -1461,11 +1512,15 @@ async function finishCaseAction(id, token, meta, { data, error }) {
     return renderList(id !== selectedCase); // another case's card is left alone
   }
   if (here) {
-    problemNotice = meta.kind === 'decision'
-      ? { kind: 'bad', text: 'The server answered with something unexpected. The list was reloaded; check the case before trying again.' }
-      : { kind: 'ok', text: meta.kind === 'reversal'
-        ? 'Reversal requested. The list was reloaded; the transfer status shows where it stands.'
-        : 'Retry queued. The list was reloaded; refresh in a minute to see whether it worked.' };
+    // A decision, a recording or a second sending is only believed from the row it answers with; a reversal
+    // or a retry asked something the list shows afterwards.
+    const ASKED = {
+      reversal: 'Reversal requested. The list was reloaded; the transfer status shows where it stands.',
+      retry: 'Retry queued. The list was reloaded; refresh in a minute to see whether it worked.',
+    };
+    problemNotice = ASKED[meta.kind]
+      ? { kind: 'ok', text: ASKED[meta.kind] }
+      : { kind: 'bad', text: 'The server answered with something unexpected. The list was reloaded; check the case before trying again.' };
     keepNotice = true;
   }
   return load();

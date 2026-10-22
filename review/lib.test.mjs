@@ -11,6 +11,9 @@ import {
   confirmText, reverseConfirmText, retryConfirmText, problemDetails, refundRows, savedText,
   chatLines, asCaseRow, saveErrorText, problemKindLabel, transferLabel, methodLabel,
   paymentStatusLabel, disputeStatusLabel, resolutionText, createRequestTracker,
+  transferredCents, reverseLabel, notifiedText, decisionButtonLabel, recordableRefunds,
+  recordRefundConfirmText, recordedText, requeueableRefunds, canRequeue, requeueConfirmText,
+  requeuedText,
 } from './lib.js';
 
 // verification as admin_list_pro_applications and admin_list_pros return it:
@@ -319,6 +322,37 @@ test('allowed_decisions_dispute_vs_normal', () => {
   assert.deepEqual(allowedDecisions(caseRow()), NORMAL);
 });
 
+test('allowed_decisions_follow_the_servers_list', () => {
+  // The case row says which decisions the database accepts (booking_decision_refusal): exactly those are offered,
+  // in the server's order, whatever the client-side rule would say.
+  assert.deepEqual(allowedDecisions(caseRow({ allowed_decisions: ['full_refund', 'release'] })), ['full_refund', 'release']);
+  // An attention-only case (money flagged, no open problem) can be closed with release.
+  assert.deepEqual(allowedDecisions(caseRow({ problems: [], attention: 'refund_failed', allowed_decisions: ['release'] })), ['release']);
+  // Nothing allowed although a problem is open (a payout that is sent or failed, a Stripe refund not recorded yet).
+  assert.deepEqual(allowedDecisions(caseRow({ allowed_decisions: [] })), []);
+  // A booking that was never confirmed gets no partial refund; the server leaves it out.
+  assert.deepEqual(allowedDecisions(caseRow({ allowed_decisions: ['full_refund', 'release'] })).includes('partial_refund'), false);
+  // A dispute: the server's list wins, even if it holds something the old rule wouldn't.
+  assert.deepEqual(allowedDecisions(caseRow({ problems: [dispute], allowed_decisions: ['release', 'withhold'] })), ['release', 'withhold']);
+  assert.deepEqual(allowedDecisions(caseRow({ problems: [dispute], allowed_decisions: ['full_refund'] })), ['full_refund']);
+  // Names the page doesn't know, duplicates and junk are dropped.
+  assert.deepEqual(allowedDecisions(caseRow({ allowed_decisions: ['release', 'burn', 'release', 7, null, 'withhold'] })), ['release', 'withhold']);
+  // Without the key (a database from before it) the client-side rule is the fallback.
+  for (const noKey of ['release', null, {}, 7]) assert.deepEqual(allowedDecisions(caseRow({ allowed_decisions: noKey })), NORMAL);
+  assert.deepEqual(allowedDecisions(caseRow({ allowed_decisions: undefined, problems: [] })), []);
+  // The caller gets its own array.
+  const own = allowedDecisions(caseRow({ allowed_decisions: ['release'] }));
+  own.push('nope');
+  assert.deepEqual(allowedDecisions(caseRow({ allowed_decisions: ['release'] })), ['release']);
+  // validateDecision offers what the server offers.
+  const flagOnly = caseRow({ problems: [], attention: 'refund_failed', allowed_decisions: ['release'] });
+  assert.equal(validateDecision(flagOnly, 'release', null, NOTE), null);
+  assert.match(validateDecision(flagOnly, 'full_refund', null, NOTE), /not available/);
+  assert.equal(validateDecision(caseRow({ allowed_decisions: ['full_refund'] }), 'full_refund', null, NOTE), null);
+  assert.match(validateDecision(caseRow({ allowed_decisions: ['full_refund'] }), 'release', null, NOTE), /not available/);
+  assert.match(validateDecision(caseRow({ allowed_decisions: [] }), 'release', null, NOTE), /no decision can be made/i);
+});
+
 test('validate_decision_rules', () => {
   const row = caseRow(); // price 2300, nothing refunded yet
   const check = (decision, cents, note, r = row) => validateDecision(r, decision, cents, note);
@@ -469,10 +503,25 @@ test('failed_jobs', () => {
       { kind: 'refund' }, null, 'x',
     ],
   });
+  // The database says which failed jobs can be retried (payment_job_retry_refusal): retryable, else the reason.
   assert.deepEqual(failedJobs(row), [
-    { id: 'j1', kind: 'refund', label: 'refund', error: 'card closed' },
-    { id: 'j2', kind: 'transfer', label: 'transfer', error: null },
-    { id: 'j3', kind: 'something_else', label: 'payment job', error: null },
+    { id: 'j1', kind: 'refund', label: 'refund', error: 'card closed', retryable: false, refusal: null },
+    { id: 'j2', kind: 'transfer', label: 'transfer', error: null, retryable: false, refusal: null },
+    { id: 'j3', kind: 'something_else', label: 'payment job', error: null, retryable: false, refusal: null },
+  ]);
+  const shaped = failedJobs(caseRow({
+    failed_jobs: [
+      { id: 'a', kind: 'transfer', last_error: 'balance_insufficient', retryable: true, retry_refusal: null },
+      { id: 'b', kind: 'refund', last_error: null, retryable: false, retry_refusal: ' Refund 9 failed for good: requeue it (admin_requeue_refund) or decide the case ' },
+      { id: 'c', kind: 'transfer', retryable: 'true', retry_refusal: null }, // only the boolean true is a yes
+      { id: 'd', kind: 'transfer', retryable: true, retry_refusal: 'A case is open on this booking: decide it first' }, // contradictory: a refusal is a no
+    ],
+  }));
+  assert.deepEqual(shaped.map((j) => [j.id, j.retryable, j.refusal]), [
+    ['a', true, null],
+    ['b', false, 'Refund 9 failed for good: requeue it (admin_requeue_refund) or decide the case'],
+    ['c', false, null],
+    ['d', false, 'A case is open on this booking: decide it first'],
   ]);
   assert.equal(failedJobs(caseRow({ failed_jobs: [{ id: 'j4', kind: 'transfer_reversal' }] }))[0].label, 'transfer reversal');
   for (const none of [caseRow(), null, { failed_jobs: 'x' }]) assert.deepEqual(failedJobs(none), []);
@@ -502,6 +551,10 @@ test('case_items_for_the_list', () => {
   assert.equal(caseItems({ ...resolvedRow, attention: 'transfer_failed' })[0].reason, 'Transfer failed');
   assert.equal(caseItems(caseRow({ problems: [], attention: null }))[0].reason, 'Nothing open');
   assert.equal(problemKindLabel('pro_no_show'), 'The pro didn’t show up');
+  // A refund that failed for good opens a case of its own, with no reporter.
+  assert.equal(problemKindLabel('refund_failed'), 'Refund failed');
+  assert.deepEqual(caseItems(caseRow({ problems: [{ ...wentWrong, kind: 'refund_failed', reporter_role: null }], attention: 'refund_failed' })),
+    [{ who: 'Zoovo', role: 'opened automatically', reason: 'Refund failed' }]);
   assert.equal(problemKindLabel('other'), 'Other');
   assert.equal(problemKindLabel('brand_new'), 'brand_new');
   assert.equal(problemKindLabel(null), 'Problem');
@@ -596,6 +649,7 @@ test('refund_and_problem_rows', () => {
       { amount_cents: 1100, reason: 'policy', status: 'succeeded', created_at: '2026-10-05T09:00:00Z', note: null },
       { amount_cents: 500, reason: 'team', status: 'failed', created_at: '2026-10-08T09:00:00Z', note: 'Half for the cut paw.' },
       { amount_cents: 50, reason: 'brand_new', status: 'requested', created_at: 'nope', note: '  ' },
+      { amount_cents: 2300, reason: 'hold_expired', status: 'pending', created_at: '2026-10-08T10:00:00Z', note: null },
       null,
     ],
     problems: [
@@ -607,6 +661,7 @@ test('refund_and_problem_rows', () => {
     { amount: '€11', reason: 'Cancellation policy', status: 'Refunded', failed: false, when: 'Mon 5 Oct, 11:00', note: null },
     { amount: '€5', reason: 'Team decision', status: 'Failed', failed: true, when: 'Thu 8 Oct, 11:00', note: 'Half for the cut paw.' },
     { amount: '€0.50', reason: 'brand_new', status: 'Queued', failed: false, when: '—', note: null },
+    { amount: '€23', reason: 'Payment too late', status: 'Pending', failed: false, when: 'Thu 8 Oct, 12:00', note: null },
   ]);
   assert.deepEqual(refundRows(caseRow()), []);
   const details = problemDetails(row);
@@ -655,8 +710,17 @@ test('decision_texts_name_the_amount', () => {
   assert.match(decisionPreview(caseRow({}, { transfer_status: 'sent' }), 'release', null), /already sent/);
   // Withholding a payout that was already sent only marks it; taking the money back is the reversal.
   const sentRow = caseRow({}, { transfer_status: 'sent' });
-  assert.match(decisionPreview(sentRow, 'withhold', null), /does not take back money.*Reverse transfer/);
-  assert.match(confirmText(sentRow, 'withhold', null), /^Withhold the payout of €18\.40 from Happy Paws Walking\? The transfer was already sent, and this does not take it back/);
+  // The preview says the payout was sent, that withholding only records the decision, and that Reverse takes money back.
+  assert.equal(decisionPreview(sentRow, 'withhold', null),
+    'The payout of €18.40 was already sent to Happy Paws Walking. Withholding only records the decision and takes nothing back: use Reverse transfer to take the money back.');
+  assert.equal(confirmText(sentRow, 'withhold', null),
+    'Withhold the payout of €18.40 from Happy Paws Walking? It was already sent: withholding only records the decision and takes nothing back (Reverse transfer does). Both are notified.');
+  // The amount of a sent payout is what was transferred, not what the booking's payout reads now.
+  const sentOther = caseRow({}, { transfer_status: 'sent', transferred_cents: 1750 });
+  assert.equal(decisionPreview(sentOther, 'release', null), 'No refund. The payout of €17.50 was already sent to Happy Paws Walking.');
+  assert.match(decisionPreview(sentOther, 'withhold', null), /^The payout of €17\.50 was already sent/);
+  assert.match(confirmText(sentOther, 'release', null), /payout of €17\.50 was already sent/);
+  assert.match(confirmText(sentOther, 'withhold', null), /^Withhold the payout of €17\.50 from/);
   assert.match(decisionPreview(caseRow({}, { payout_cents: 0, transfer_status: 'none' }), 'release', null), /closes the case/);
   // Every confirmation says that both sides are told.
   for (const [decision, cents] of [['full_refund', null], ['partial_refund', 100], ['release', null], ['withhold', null]]) {
@@ -667,7 +731,12 @@ test('decision_texts_name_the_amount', () => {
   assert.equal(confirmText(row, 'burn', null), '');
   // The reversal and the retry.
   const sent = caseRow({}, { transfer_status: 'sent' });
-  assert.match(reverseConfirmText(sent), /^Reverse the transfer of €18\.40 to Happy Paws Walking\?/);
+  // The reversal takes back what was transferred (booking.transferred_cents), not the booking's payout.
+  const transferred = caseRow({}, { transfer_status: 'sent', transferred_cents: 1760 });
+  assert.equal(reverseConfirmText(transferred),
+    'Reverse the transfer of €17.60 to Happy Paws Walking? The money is taken back from their Stripe account.');
+  // Without it the amount is not known, so none is named (never the payout's).
+  assert.equal(reverseConfirmText(sent), 'Reverse the transfer to Happy Paws Walking? The money is taken back from their Stripe account.');
   assert.match(retryConfirmText({ kind: 'refund', label: 'refund' }), /^Retry the failed refund\?/);
 });
 
@@ -806,4 +875,170 @@ test('request_tracker_sends_once_and_ignores_stale_answers', () => {
   assert.equal(requests.finish('b2', other), false);
   // Only a booking id can be sent for.
   for (const bad of [null, undefined, '', 7, {}]) assert.equal(requests.start(bad), null);
+});
+
+// ---------------------------------------------------------------------------
+// Following the server's final case row (Task 10)
+// ---------------------------------------------------------------------------
+
+// A case that is only on the list because money was flagged: no open problem, and the database allows release.
+const flagOnly = (over = {}, booking = {}) => caseRow({
+  problems: [], attention: 'refund_failed', allowed_decisions: ['release'], ...over,
+}, booking);
+
+test('transferred_amount_for_the_reversal', () => {
+  assert.equal(transferredCents(caseRow({}, { transfer_status: 'sent', transferred_cents: 1760 })), 1760);
+  assert.equal(transferredCents(caseRow({}, { transferred_cents: 0 })), 0);
+  for (const bad of [null, undefined, -1, 1.5, '1760', NaN]) {
+    assert.equal(transferredCents(caseRow({}, { transferred_cents: bad })), null, JSON.stringify(bad));
+  }
+  assert.equal(transferredCents(null), null);
+  assert.equal(reverseLabel(caseRow({}, { transferred_cents: 1760 })), 'Reverse transfer · €17.60');
+  assert.equal(reverseLabel(caseRow({}, { transferred_cents: null })), 'Reverse transfer');
+});
+
+test('attention_only_cases_say_what_release_does', () => {
+  const row = flagOnly({}, { payout_cents: 1840 });
+  // No report is open, so nobody is told (the RPC notifies only when a problem was open).
+  assert.equal(notifiedText(row), 'No one is notified.');
+  assert.equal(notifiedText(caseRow()), 'Both are notified.');
+  assert.equal(notifiedText(caseRow({ problems: [{ ...wentWrong, status: 'resolved' }] })), 'No one is notified.');
+  assert.equal(notifiedText(null), 'No one is notified.');
+  assert.equal(decisionPreview(row, 'release', null),
+    'No refund. This clears the flag on the booking’s money. A payout that is on hold goes back to pending.');
+  assert.equal(confirmText(row, 'release', null),
+    'Clear the flag on this booking with no refund? A payout that is on hold goes back to pending. No one is notified.');
+  // A refund the database allows on such a case also says nobody is told.
+  assert.match(confirmText(flagOnly({ allowed_decisions: ['full_refund', 'release'] }), 'full_refund', null), /No one is notified\. A refund can’t be taken back\.$/);
+  // With a report open it is as before.
+  assert.match(confirmText(caseRow(), 'release', null), /^Release the payout of €18\.40 to Happy Paws Walking, with no refund\? Both are notified\.$/);
+});
+
+test('decision_button_labels', () => {
+  const row = caseRow();
+  assert.equal(decisionButtonLabel(row, 'full_refund'), 'Refund in full · €23');
+  assert.equal(decisionButtonLabel(caseRow({}, { refunded_cents: 500 }), 'full_refund'), 'Refund in full · €18');
+  assert.equal(decisionButtonLabel(row, 'partial_refund'), 'Refund part');
+  assert.equal(decisionButtonLabel(row, 'release'), 'Release payout · €18.40');
+  assert.equal(decisionButtonLabel(row, 'withhold'), 'Withhold payout · €18.40');
+  assert.equal(decisionButtonLabel(caseRow({}, { payout_cents: 0, transfer_status: 'none' }), 'release'), 'Release payout');
+  // A payout that was sent can't be released any more: the decision only closes the case.
+  assert.equal(decisionButtonLabel(caseRow({}, { transfer_status: 'sent' }), 'release'), 'Release (keep the payout)');
+  // With no report open, release is the way to take the flag off the list.
+  assert.equal(decisionButtonLabel(flagOnly(), 'release'), 'Clear flag (no refund)');
+  assert.equal(decisionButtonLabel(row, 'burn'), '');
+});
+
+test('record_an_outside_refund', () => {
+  const flags = [
+    { event: 'refund_external', stripe_refund_id: 're_ext1', amount_cents: 500 },
+    { event: 'refund_status_conflict', stripe_refund_id: ' re_conf2 ', amount_cents: null },
+    { event: 'refund_failed', stripe_refund_id: 're_failed', amount_cents: 100 }, // flagged, but not a refund to record
+    { event: 'refund_external', stripe_refund_id: '', amount_cents: 100 },
+    { event: 'refund_external', amount_cents: 100 },
+    { event: 'refund_external', stripe_refund_id: 're_ext1', amount_cents: 500 }, // the same refund twice
+    null, 'x',
+  ];
+  const row = flagOnly({ money_flags: flags });
+  // The Stripe id comes from the case, trimmed; it is never typed.
+  assert.deepEqual(recordableRefunds(row), [
+    { stripeId: 're_ext1', event: 'refund_external', cents: 500, label: 'Refund made outside Zoovo' },
+    { stripeId: 're_conf2', event: 'refund_status_conflict', cents: null, label: 'Refund Stripe reports differently' },
+  ]);
+  // Stripe's amount is a whole number of cents above zero, or it isn't named.
+  const amounts = recordableRefunds(flagOnly({ money_flags: [0, -5, 1.5, '500', undefined].map((a, i) => ({ event: 'refund_external', stripe_refund_id: `re_${i}`, amount_cents: a })) }));
+  assert.deepEqual(amounts.map((r) => r.cents), [null, null, null, null, null]);
+  for (const none of [flagOnly(), flagOnly({ money_flags: [] }), flagOnly({ money_flags: 'x' }), null]) {
+    assert.deepEqual(recordableRefunds(none), []);
+  }
+
+  const [outside, conflict] = recordableRefunds(row);
+  assert.equal(recordRefundConfirmText(row, outside),
+    'Record Stripe refund re_ext1 (€5) as a refund made outside Zoovo? It is counted in the refunded amount and the payout split. Nothing is sent to Stripe and no one is notified.');
+  assert.equal(recordRefundConfirmText(row, conflict),
+    'Record what Stripe reports for refund re_conf2? Zoovo’s books are brought in line with Stripe, so the refunded amount and the payout can change. Nothing is sent to Stripe and no one is notified.');
+  assert.match(recordRefundConfirmText(row, { ...conflict, cents: 3500 }), /^Record what Stripe reports for refund re_conf2 \(€35\)\?/);
+
+  // After the call: the banner is true only if the returned row no longer lists that refund.
+  const after = flagOnly({ money_flags: [{ event: 'refund_external', stripe_refund_id: 're_other', amount_cents: 100 }] }, { refunded_cents: 500 });
+  assert.equal(recordedText(after, { stripeId: 're_ext1' }), 'Refund re_ext1 recorded. Refunded so far: €5.');
+  assert.equal(recordedText(flagOnly({ money_flags: [] }, { refunded_cents: 0 }), { stripeId: 're_ext1' }), 'Refund re_ext1 recorded. Refunded so far: €0.');
+  assert.equal(recordedText(row, { stripeId: 're_ext1' }), null); // still listed
+  assert.equal(recordedText(flagOnly(), { stripeId: 're_ext1' }), null); // no list to check
+  assert.equal(recordedText(after, {}), null);
+  assert.equal(recordedText(after, null), null);
+  assert.equal(recordedText(null, { stripeId: 'x' }), null);
+});
+
+test('requeue_a_refund_that_failed_for_good', () => {
+  const refund = (over) => ({ amount_cents: 3500, reason: 'team', status: 'failed', created_at: '2026-10-09T09:00:00Z', note: null, ...over });
+  const withRefunds = (refunds, over = {}) => caseRow({ problems: [], attention: 'refund_failed', refunds, ...over });
+
+  assert.deepEqual(requeueableRefunds(withRefunds([refund()])), [{ amount: 3500, reason: 'team' }]);
+  assert.deepEqual(requeueableRefunds(withRefunds([refund({ status: 'canceled' })])), [{ amount: 3500, reason: 'team' }]);
+  // Nothing to send again: refunds that are fine, or still on their way.
+  for (const status of ['succeeded', 'pending', 'requested']) assert.deepEqual(requeueableRefunds(withRefunds([refund({ status })])), [], status);
+  // A later refund of the same amount and reason is the requeue of it, whatever became of that one.
+  assert.deepEqual(requeueableRefunds(withRefunds([refund(), refund({ status: 'requested', created_at: '2026-10-10T09:00:00Z' })])), []);
+  // ...and when the requeue failed too, only that one can be sent again.
+  const again = withRefunds([refund(), refund({ created_at: '2026-10-10T09:00:00Z' })]);
+  assert.deepEqual(requeueableRefunds(again), [{ amount: 3500, reason: 'team' }]);
+  // A different amount or reason is somebody else's refund.
+  assert.equal(requeueableRefunds(withRefunds([refund(), refund({ amount_cents: 500, status: 'succeeded' })])).length, 1);
+  assert.equal(requeueableRefunds(withRefunds([refund(), refund({ reason: 'policy', status: 'succeeded' })])).length, 1);
+  // A chain of requeues that each failed again: only the last one can be sent again, and nothing while it is on its way.
+  assert.equal(requeueableRefunds(withRefunds([refund(), refund({ created_at: '2026-10-10T09:00:00Z' }), refund({ created_at: '2026-10-11T09:00:00Z' })])).length, 1);
+  assert.equal(requeueableRefunds(withRefunds([refund(), refund({ created_at: '2026-10-10T09:00:00Z' }), refund({ status: 'requested', created_at: '2026-10-11T09:00:00Z' })])).length, 0);
+  for (const none of [null, caseRow({ refunds: 'x' }), caseRow()]) assert.deepEqual(requeueableRefunds(none), []);
+
+  // Offered only when nothing must be recorded first (the database refuses it then).
+  const flagged = withRefunds([refund()], { money_flags: [{ event: 'refund_external', stripe_refund_id: 're_1', amount_cents: 100 }] });
+  assert.equal(canRequeue(withRefunds([refund()])), true);
+  assert.equal(canRequeue(flagged), false);
+  assert.equal(canRequeue(withRefunds([refund({ status: 'succeeded' })])), false);
+
+  assert.equal(requeueConfirmText(withRefunds([refund()])),
+    'Send the failed refund of €35 again to Daan Visser? It goes to Stripe as a new refund request. A refund can’t be taken back.');
+  assert.equal(requeueConfirmText(withRefunds([refund(), refund({ id: 2, amount_cents: 500, created_at: '2026-10-09T10:00:00Z' })])),
+    'Send 2 failed refunds again (€40 in all) to Daan Visser? Each goes to Stripe as a new refund request. A refund can’t be taken back.');
+  assert.equal(requeueConfirmText(caseRow()), '');
+
+  // After the call: the banner is true only if nothing is left to send again.
+  const sent = { cents: 3500 };
+  assert.equal(requeuedText(withRefunds([refund(), refund({ status: 'requested', created_at: '2026-10-10T09:00:00Z' })]), sent),
+    'Refund sent again: €35 is queued; its status is below.');
+  assert.equal(requeuedText(withRefunds([refund()]), sent), null);
+  assert.equal(requeuedText(again, sent), null); // the requeue failed straight away
+  assert.equal(requeuedText(withRefunds([refund(), refund({ status: 'requested', created_at: '2026-10-10T09:00:00Z' })]), {}), null);
+});
+
+test('saved_text_for_a_case_with_no_report', () => {
+  const team = (amount, status) => ({ amount_cents: amount, reason: 'team', status, created_at: '2026-10-10T08:00:00Z', note: NOTE });
+  const answer = (over, booking) => flagOnly({ attention: null, allowed_decisions: [], ...over }, booking);
+  const sent = (decision, extra = {}) => ({ decision, ids: [], ...extra });
+
+  // Nothing was open to resolve, so the proof is in the returned row: the database allows no decision any more.
+  assert.equal(savedText(answer({}), sent('release')), 'Decision saved: the flag is cleared, no refund.');
+  assert.equal(savedText(answer({ allowed_decisions: ['release'] }), sent('release')), null); // still decidable
+  assert.equal(savedText(flagOnly({ attention: null, allowed_decisions: undefined }), sent('release')), null); // no list to check
+  assert.equal(savedText(answer({}), sent('withhold')), null); // withholding needs a dispute, so never here
+  assert.equal(savedText(answer({}), sent('burn')), null);
+  assert.equal(savedText(answer({ refunds: [team(500, 'requested')] }, { refunded_cents: 500 }), sent('withhold', { cents: 500, refundedBefore: 0 })), null);
+
+  // A refund the database allowed: its effect is checked in the returned booking.
+  const refunded = answer({ refunds: [team(500, 'requested')] }, { refunded_cents: 500 });
+  assert.equal(savedText(refunded, sent('partial_refund', { cents: 500, refundedBefore: 0 })),
+    'Decision saved: Refunded €5. The refund is queued; its status is below.');
+  assert.equal(savedText(refunded, sent('partial_refund', { cents: 600, refundedBefore: 0 })), null); // another amount
+  // Only the refund of that amount is the one queued: a pending refund of another amount isn't mentioned.
+  assert.doesNotMatch(savedText(answer({ refunds: [team(700, 'pending')] }, { refunded_cents: 500 }), sent('partial_refund', { cents: 500, refundedBefore: 0 })), /queued/);
+  assert.equal(savedText(refunded, sent('partial_refund', { cents: 500 })), null); // nothing to compare with
+  assert.equal(savedText(answer({ refunds: [team(2300, 'succeeded')] }, { refunded_cents: 2300 }),
+    sent('full_refund', { cents: 2300, refundedBefore: 0 })), 'Decision saved: Refunded in full.');
+  assert.equal(savedText(answer({ refunds: [team(500, 'succeeded')] }, { refunded_cents: 0 }),
+    sent('partial_refund', { cents: 500, refundedBefore: 0 })), null);
+
+  // With a report that was open the problems are the proof, as before.
+  assert.equal(savedText(caseRow({ problems: [{ ...wentWrong, status: 'resolved', resolution: 'release' }], attention: null, allowed_decisions: [] }),
+    { decision: 'release', ids: ['p1'] }), 'Decision saved: Payout released.');
 });
