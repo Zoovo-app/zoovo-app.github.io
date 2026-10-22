@@ -79,6 +79,32 @@ ul.plain{margin:0;padding-left:18px;white-space:normal}
 .actions select,.actions textarea{font-weight:400}
 .sep{border-top:1px solid var(--line);padding-top:14px}
 .sep.dashed{border-top-style:dashed;margin-top:6px;padding-top:12px}
+.tag.ok{background:#e3f4e9;color:#1d6b3a}
+body.wide .wrap{max-width:1120px}
+.sortby{display:flex;align-items:center;gap:8px;margin:0;font-size:14px;font-weight:400;color:var(--muted)}
+.sortby select{width:auto;border-radius:999px;padding:6px 12px;font-size:14px;color:var(--navy)}
+.tablewrap{margin-top:12px;background:#fff;border:1px solid var(--line);border-radius:16px;overflow-x:auto}
+table.pros{width:100%;min-width:980px;border-collapse:collapse;font-size:14px}
+.pros th{padding:12px 16px;text-align:left;font-size:12px;font-weight:700;letter-spacing:1px;text-transform:uppercase;color:var(--muted);border-bottom:1px solid var(--line)}
+.pros td{padding:12px 16px;vertical-align:top;border-bottom:1px solid var(--line)}
+.pros tbody tr:last-child>td{border-bottom:0}
+.pros .num{text-align:right;white-space:nowrap}
+.pros .good{color:#1d6b3a;font-weight:700;white-space:nowrap}
+.pros .amber{color:#8a5a00;font-weight:700}
+.pros .name{font-weight:700;overflow-wrap:anywhere}
+.pros .small{font-size:13px;white-space:nowrap}
+.pros .chip{white-space:nowrap;overflow-wrap:normal}
+.tag a{color:inherit}
+.pros .tags{margin:4px 0 0}
+.pros .chip[aria-expanded=true]{background:var(--navy);border-color:var(--navy);color:#fff}
+.pros tr.open>td{background:#fff6e0;border-bottom:0}
+.pros tr.open .cancels{font-weight:700;color:#8a3a00}
+.pros tr.open>td.detail{border-bottom:1px solid var(--line)}
+.pros td.detail{padding:0 16px 16px}
+.reasons{display:flex;flex-direction:column;gap:10px;background:#fff;border:1px solid #f2d58a;border-radius:12px;padding:14px 16px}
+.reasons .tags{align-items:center;margin:0}
+.reasons b{color:var(--navy);margin-right:6px}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
 @media (max-width:600px){.app{grid-template-columns:1fr}dl{grid-template-columns:1fr}.colheads{display:none}.box[data-col]::before{content:attr(data-col);display:block;margin-bottom:4px;font-size:11px;font-weight:700;letter-spacing:1px;color:var(--muted)}}
 </style></head>
 <body><header><div class="wrap"><a href="/">ZOOVO</a><button id="signout" hidden>Sign out</button></div></header>
@@ -118,6 +144,10 @@ ul.plain{margin:0;padding-left:18px;white-space:normal}
 </main>
 <script type="module">
 import { supabaseClient } from '/assets/supabase.js';
+import {
+  PRO_SORTS, cancelRate, durationLabel, formatEuro, kvkUrl, reasonCounts, sortPros,
+  stateText, stripeTypeNote, verificationBadges,
+} from '/review/lib.js';
 
 // Applicants choose their avatar URL (the database only checks for https), so
 // only images from our own public buckets are loaded here; anything else would
@@ -144,7 +174,7 @@ const COMPARED = [
   'title', 'category', 'other_category_label', 'description', 'whats_included',
   'experience_note', 'media', 'price_unit', 'base_price_cents', 'size_prices',
   'extra_pet_price_cents', 'weekend_surcharge_pct', 'holiday_surcharge_pct',
-  'custom_quote', 'location_mode', 'service_radius_km', 'address_label',
+  'custom_quote', 'duration_minutes', 'location_mode', 'service_radius_km', 'address_label',
   'requirements', 'extra_requirements', 'cancellation_policy',
 ];
 
@@ -175,6 +205,7 @@ function normaliseVersion(v) {
     weekend_surcharge_pct: num(x.weekend_surcharge_pct),
     holiday_surcharge_pct: num(x.holiday_surcharge_pct),
     custom_quote: x.custom_quote === true,
+    duration_minutes: num(x.duration_minutes),
     location_mode: text(x.location_mode),
     service_radius_km: num(x.service_radius_km),
     address_label: text(x.address_label),
@@ -196,7 +227,7 @@ const FIELD_GROUP = {
   description: 'description', whats_included: "what's included", experience_note: 'experience note',
   price_unit: 'price', base_price_cents: 'price', size_prices: 'price',
   extra_pet_price_cents: 'price', weekend_surcharge_pct: 'price',
-  holiday_surcharge_pct: 'price', custom_quote: 'price',
+  holiday_surcharge_pct: 'price', custom_quote: 'price', duration_minutes: 'duration',
   location_mode: 'location', service_radius_km: 'location', address_label: 'location',
   requirements: 'requirements', extra_requirements: 'requirements',
   cancellation_policy: 'cancellation policy',
@@ -229,10 +260,6 @@ function changeLabels(live, version) {
     }
   }
   return labels;
-}
-
-function euros(cents) {
-  return `€${(cents / 100).toFixed(2).replace(/\.00$/, '')}`;
 }
 
 // Splits `text` into [unchanged start, changed middle, unchanged end] against
@@ -322,12 +349,12 @@ function removedPriceParts(live, version) {
     if (n.custom_quote) out.push(['quote', 'Custom quote (price on request)']);
     for (const [key, label] of SIZES) {
       const cents = n.size_prices?.[key];
-      if (typeof cents === 'number') out.push([`size_${key}`, `${label} ${euros(cents)}`]);
+      if (typeof cents === 'number') out.push([`size_${key}`, `${label} ${formatEuro(cents)}`]);
     }
     if (n.base_price_cents !== null) {
-      out.push(['base', `${n.size_prices ? 'Base ' : ''}${euros(n.base_price_cents)}`]);
+      out.push(['base', `${n.size_prices ? 'Base ' : ''}${formatEuro(n.base_price_cents)}`]);
     }
-    if (n.extra_pet_price_cents !== null) out.push(['extra_pet', `Extra pet +${euros(n.extra_pet_price_cents)}`]);
+    if (n.extra_pet_price_cents !== null) out.push(['extra_pet', `Extra pet +${formatEuro(n.extra_pet_price_cents)}`]);
     if (n.weekend_surcharge_pct !== null) out.push(['weekend', `Weekends +${n.weekend_surcharge_pct}%`]);
     if (n.holiday_surcharge_pct !== null) out.push(['holiday', `Holidays +${n.holiday_surcharge_pct}%`]);
     return out;
@@ -370,7 +397,7 @@ const REASONS = [
   'Your biography is too short or unclear.',
   "We couldn't verify your experience or documents.",
 ];
-const TABS = [['apps', 'Applications'], ['new', 'New services'], ['edits', 'Edits'], ['live', 'Live services']];
+const TABS = [['apps', 'Applications'], ['new', 'New services'], ['edits', 'Edits'], ['live', 'Live services'], ['pros', 'Pros']];
 const SERVICE_REASONS = [
   'Photos are not your own work', 'Price or description is unclear',
   'Not an allowed service', 'Other',
@@ -378,6 +405,8 @@ const SERVICE_REASONS = [
 let activeTab = 'apps';
 let filter = 'pending';
 let rows = [];
+let prosSort = PRO_SORTS[0][0]; // the Pros tab's order
+const expandedPros = new Set(); // ids of the pros whose cancellation reasons are open
 let counts = {}; // tab -> number waiting; unset or null while unknown
 // Tabs whose number is the true count (from the last answer of
 // admin_service_queue_counts). The others come from a list, which stops at 200
@@ -433,6 +462,7 @@ async function load() {
   $('list').replaceChildren();
   loadCounts(seq);
   if (activeTab === 'apps') await loadApplications(seq);
+  else if (activeTab === 'pros') await loadPros(seq);
   else await loadServices(seq);
 }
 
@@ -466,6 +496,21 @@ async function loadServices(seq) {
   rows = data ?? [];
   if (!exact.has(activeTab)) counts[activeTab] = rows.length;
   renderTabs();
+  renderList();
+}
+
+async function loadPros(seq) {
+  rows = []; // the sort control must never redraw another tab's rows
+  const { data, error } = await sb.rpc('admin_list_pros');
+  if (seq !== loadSeq) return;
+  if (error) {
+    // Like the services: the other tabs work without it, so only this one says so.
+    $('listMsg').textContent = error.code === 'PGRST202'
+      ? "The pros overview isn't set up yet. Apply migrations 104 to 111 from the Zoovo-app/zoovo-app repo, then reload this page."
+      : `Couldn't load pros: ${error.message}`;
+    return;
+  }
+  rows = data ?? [];
   renderList();
 }
 
@@ -550,12 +595,20 @@ function renderTabs() {
     b.textContent = typeof n === 'number' ? `${label} · ${n >= 200 && !exact.has(key) ? '200+' : n}` : label;
     b.setAttribute('aria-pressed', String(activeTab === key));
   }
+  document.body.classList.toggle('wide', activeTab === 'pros'); // the table needs the room
 }
 
 function renderFilters() {
   const filters = $('filters');
   filters.replaceChildren();
-  filters.hidden = activeTab !== 'apps'; // the status filters are the applications'
+  filters.hidden = activeTab !== 'apps' && activeTab !== 'pros'; // the status filters are the applications'
+  if (activeTab === 'pros') {
+    const sort = el('select', {}, ...PRO_SORTS.map(([value, label]) => el('option', { value, textContent: label })));
+    sort.value = prosSort;
+    sort.onchange = () => { prosSort = sort.value; renderList(); };
+    filters.append(el('span', { className: 'spacer' }), el('label', { className: 'sortby' }, 'Sort by', sort));
+    return;
+  }
   for (const [value, label] of FILTERS) {
     const b = el('button', { className: 'chip', textContent: label });
     b.setAttribute('aria-pressed', String(filter === value));
@@ -567,6 +620,7 @@ function renderFilters() {
 function renderList() {
   // The RPCs return at most 200 rows.
   const capped = rows.length >= 200 ? ' (the list stops at 200)' : '';
+  if (activeTab === 'pros') return renderPros(capped);
   const order = activeTab === 'live' ? 'latest change first' : 'oldest first';
   $('listMsg').textContent = rows.length ? `${rows.length} shown, ${order}${capped}` : 'Nothing here.';
   $('list').replaceChildren(...(activeTab === 'apps' ? rows.map(card) : rows.map((r) => serviceCard(r, activeTab))));
@@ -582,20 +636,41 @@ function ownAvatarUrl(value) {
   }
 }
 
+const BADGE_TAG = { ok: 'tag ok', pending: 'tag added', todo: 'tag', attention: 'tag warn' };
+
+// `number` is what the applicant typed and is shown as it is; `href` is the
+// link kvkUrl built from its 8 digits.
+function kvkLink(number, href, className = '') {
+  return el('a', { className, href, target: '_blank', rel: 'noopener noreferrer', textContent: `KvK ${number.trim()} ↗` });
+}
+
 function card(a) {
   const photo = el('img', { alt: '', referrerPolicy: 'no-referrer' });
   const avatar = ownAvatarUrl(a.avatar_url ?? '');
   if (avatar) photo.src = avatar;
 
   const person = [a.first_name, a.last_name].filter(Boolean).join(' ');
+  // The KvK number of a business links to the company in the KvK register. An
+  // older application may hold another kind of number; that stays a plain fact.
+  const kvk = a.is_business ? kvkUrl(a.business_reg_number) : null;
+  const stripeNote = stripeTypeNote(a.is_business, a.verification?.business_type);
   const tags = el('div', { className: 'tags' },
     el('span', { className: 'tag status', textContent: a.status }),
-    el('span', { className: 'tag', textContent: a.is_business ? 'Registered business' : 'Private individual' }),
+    el('span', { className: 'tag' }, a.is_business ? 'Business' : 'Private',
+      ...(kvk ? [' · ', kvkLink(a.business_reg_number, kvk)] : [])),
+    stripeNote ? el('span', { className: 'tag warn', textContent: stripeNote }) : null,
     ...(a.categories ?? []).map((c) => el('span', {
       className: 'tag',
       textContent: c === 'other' && a.other_category_label ? `Other: ${a.other_category_label}` : (CATEGORIES[c] ?? c),
     })),
   );
+  // Without the verification fields (a database from before migration 107) the
+  // badges are left out.
+  const badges = verificationBadges(a.verification);
+  const badgeTags = badges.length ? el('div', { className: 'tags' }, ...badges.map((b) => el('span', {
+    className: BADGE_TAG[b.state],
+    textContent: `${b.label}: ${stateText(b.label, b.state)}`,
+  }))) : null;
 
   const facts = el('dl');
   const fact = (term, value) => { if (value) facts.append(el('dt', { textContent: term }), el('dd', {}, value)); };
@@ -603,7 +678,7 @@ function card(a) {
   fact('Email', a.email ? el('a', { href: `mailto:${encodeURIComponent(a.email).replace('%40', '@')}`, textContent: a.email }) : null);
   fact('Phone', /^\+[0-9]{7,15}$/.test(a.phone ?? '') ? el('a', { href: `tel:${a.phone}`, textContent: a.phone }) : a.phone);
   fact('Address', [a.address_line, `${a.postcode ?? ''} ${a.city ?? ''}`.trim(), a.country].filter(Boolean).join(', '));
-  fact('Company / VAT', a.business_reg_number);
+  fact('Company / VAT', kvk ? null : a.business_reg_number);
   fact('Service area', a.service_area_label);
   fact('Experience', `${a.years_experience} years`);
   fact('Languages', (a.languages ?? []).join(', ').toUpperCase());
@@ -623,6 +698,7 @@ function card(a) {
   const body = el('div', {},
     el('h2', { textContent: a.display_name }),
     tags,
+    badgeTags,
     a.status === 'pending' ? el('p', { className: 'waiting', textContent: `Waiting ${waited(a.submitted_at)}` }) : null,
     facts,
     el('div', { className: 'bio', textContent: a.bio }),
@@ -670,6 +746,115 @@ function actions(a) {
     box.append(el('div', { className: 'row' }, reinstate));
   }
   return box;
+}
+
+// ---------------------------------------------------------------------------
+// Pros. Names, emails and KvK numbers come from the professionals: textContent
+// only, as everywhere else on this page.
+// ---------------------------------------------------------------------------
+
+const PRO_ORDER_TEXT = {
+  rate: 'highest cancellation rate first', bookings: 'most bookings in 90 days first',
+  problems: 'most open problems first', name: 'A to Z',
+};
+
+function renderPros(capped) {
+  const n = rows.length;
+  $('listMsg').textContent = n
+    ? `${n} ${n === 1 ? 'pro' : 'pros'} · ${PRO_ORDER_TEXT[prosSort] ?? PRO_ORDER_TEXT.rate}${capped}`
+    : 'Nothing here.';
+  $('list').replaceChildren(...(n ? [
+    prosTable(sortPros(rows, prosSort)),
+    el('p', {
+      className: 'muted',
+      textContent: 'Rate = cancellations by the pro ÷ the pro’s bookings in the last 90 days. Cancellations by customers aren’t counted here. A KvK number opens the company in the KvK register.',
+    }),
+  ] : []));
+}
+
+function prosTable(pros) {
+  const th = (text, className = '') => el('th', { scope: 'col', textContent: text, className });
+  const head = el('thead', {}, el('tr', {},
+    th('Pro'), th('Bookings (90 d / all)', 'num'), th('Cancelled by the pro (90 d)'),
+    th('Problems (open / all)'), th('Identity'), th('Payouts'), th('Private or business'),
+    el('th', { scope: 'col' }, el('span', { className: 'sr', textContent: 'Details' }))));
+  return el('div', { className: 'tablewrap' },
+    el('table', { className: 'pros' }, head, el('tbody', {}, ...pros.flatMap(proRows))));
+}
+
+const whole = (n) => (Number.isFinite(n) ? n : 0);
+
+// "✓ Verified", or what is still open. `hint` goes under it.
+function badgeCell(badge, hint) {
+  if (!badge) return el('td', {}, none('—'));
+  const text = stateText(badge.label, badge.state);
+  if (badge.state === 'ok') return el('td', { className: 'good' }, `✓ ${text}`);
+  return el('td', {},
+    el('span', { className: badge.state === 'todo' ? 'muted' : 'amber', textContent: text }),
+    ...(hint ? [el('br'), none(hint)] : []));
+}
+
+// A pro's row, and under it (hidden until opened) the reasons for the
+// cancellations. Only a pro with cancellations in the last 90 days has them.
+function proRows(p) {
+  const name = p.display_name ?? 'Unknown';
+  const [identity, payouts] = verificationBadges(p.verification);
+  const cancels = whole(p.pro_cancels_90d);
+  const reasons = reasonCounts(p.cancel_reasons_90d);
+  const canOpen = cancels > 0;
+  const open = canOpen && expandedPros.has(p.id);
+
+  const status = p.status === 'approved' ? 'tag ok' : p.status === 'suspended' ? 'tag warn' : 'tag';
+  const problems = whole(p.problems_total) === 0
+    ? el('td', {}, '0')
+    : el('td', {}, `${whole(p.problems_open)} open`, el('span', { className: 'muted', textContent: ` of ${whole(p.problems_total)}` }));
+  const kvk = p.is_business && typeof p.kvk === 'string' && p.kvk.trim() ? p.kvk : null;
+  const stripeNote = stripeTypeNote(p.is_business, p.verification?.business_type);
+
+  const row = el('tr', { className: open ? 'open' : '' },
+    el('td', {},
+      el('div', { className: 'name', textContent: name }),
+      p.email ? el('div', { className: 'muted', textContent: p.email }) : null,
+      el('div', { className: 'tags' }, el('span', { className: status, textContent: p.status ?? 'unknown' }))),
+    el('td', { className: 'num', textContent: `${whole(p.bookings_90d)} / ${whole(p.bookings_total)}` }),
+    whole(p.bookings_total) === 0
+      ? el('td', {}, none('No bookings yet'))
+      : el('td', { className: 'cancels', textContent: `${cancels} · ${cancelRate(p.pro_cancel_rate_90d)}` }),
+    problems,
+    badgeCell(identity),
+    badgeCell(payouts, payouts?.state === 'attention' ? 'Not taking bookings' : null),
+    el('td', {},
+      p.is_business ? 'Business' : 'Private',
+      kvk ? el('br') : null,
+      kvk ? (kvkUrl(kvk) ? kvkLink(kvk, kvkUrl(kvk), 'small') : none(`KvK ${kvk}`)) : null,
+      stripeNote ? el('div', { className: 'tags' }, el('span', { className: 'tag warn', textContent: stripeNote })) : null),
+    el('td'));
+  if (!canOpen) return [row];
+
+  const detail = el('tr', { id: `reasons-${p.id}`, className: open ? 'open' : '', hidden: !open },
+    el('td', { colSpan: 8, className: 'detail' }, el('div', { className: 'reasons' },
+      el('div', { className: 'tags' },
+        el('b', { textContent: 'Cancellation reasons, last 90 days' }),
+        ...(reasons.length
+          ? reasons.map((r) => el('span', { className: 'tag', textContent: `${r.label} × ${r.count}` }))
+          : [none('No reasons recorded')])),
+      none('Each one was refunded in full to the customer, and the pro was paid nothing for them.'))));
+  const toggle = el('button', { type: 'button', className: 'chip small', textContent: open ? 'Hide reasons' : 'Reasons' });
+  toggle.setAttribute('aria-expanded', String(open));
+  toggle.setAttribute('aria-controls', detail.id);
+  toggle.setAttribute('aria-label', `Cancellation reasons for ${name}`);
+  toggle.onclick = () => {
+    const show = detail.hidden;
+    if (show) expandedPros.add(p.id);
+    else expandedPros.delete(p.id);
+    detail.hidden = !show;
+    row.classList.toggle('open', show);
+    detail.classList.toggle('open', show);
+    toggle.textContent = show ? 'Hide reasons' : 'Reasons';
+    toggle.setAttribute('aria-expanded', String(show));
+  };
+  row.lastElementChild.append(toggle);
+  return [row, detail];
 }
 
 // ---------------------------------------------------------------------------
@@ -730,13 +915,13 @@ function priceNodes(v, o) {
   if (v.custom_quote) prices.push(piece('Custom quote (price on request)', same('custom_quote')));
   for (const [key, label] of SIZES) {
     const cents = v.size_prices?.[key];
-    if (typeof cents === 'number') prices.push(piece(`${label} ${euros(cents)}`, !o || (o.size_prices?.[key] ?? null) === cents));
+    if (typeof cents === 'number') prices.push(piece(`${label} ${formatEuro(cents)}`, !o || (o.size_prices?.[key] ?? null) === cents));
   }
   if (v.base_price_cents !== null) {
-    prices.push(piece(`${v.size_prices ? 'Base ' : ''}${euros(v.base_price_cents)}`, same('base_price_cents')));
+    prices.push(piece(`${v.size_prices ? 'Base ' : ''}${formatEuro(v.base_price_cents)}`, same('base_price_cents')));
   }
   const extras = [];
-  if (v.extra_pet_price_cents !== null) extras.push(piece(`Extra pet +${euros(v.extra_pet_price_cents)}`, same('extra_pet_price_cents')));
+  if (v.extra_pet_price_cents !== null) extras.push(piece(`Extra pet +${formatEuro(v.extra_pet_price_cents)}`, same('extra_pet_price_cents')));
   if (v.weekend_surcharge_pct !== null) extras.push(piece(`Weekends +${v.weekend_surcharge_pct}%`, same('weekend_surcharge_pct')));
   if (v.holiday_surcharge_pct !== null) extras.push(piece(`Holidays +${v.holiday_surcharge_pct}%`, same('holiday_surcharge_pct')));
   const unit = v.price_unit ? piece(UNITS[v.price_unit] ?? v.price_unit, same('price_unit')) : null;
@@ -843,6 +1028,12 @@ const ROWS = [
       'weekend_surcharge_pct', 'holiday_surcharge_pct', 'custom_quote'],
     render: priceNodes,
   },
+  // Only a visit or a fixed price needs one, so a single service without it
+  // doesn't show an empty row; in an edit a change to or from it still does.
+  {
+    label: 'Duration', fields: ['duration_minutes'], skipIfUnset: true,
+    render: compareText((n) => durationLabel(n.duration_minutes)),
+  },
   { label: 'Description', fields: ['description'], render: compareText((n) => n.description) },
   { label: "What's included", fields: ['whats_included'], render: listNodes },
   { label: 'Experience', fields: ['experience_note'], render: compareText((n) => n.experience_note) },
@@ -881,7 +1072,8 @@ function settingsBlocks(r, queue) {
 
 function singleView(r, n, queue) {
   return [
-    ...ROWS.filter((row) => !row.compareOnly).map((row) => block(row.label, panel(row.render(n)))),
+    ...ROWS.filter((row) => !row.compareOnly && !(row.skipIfUnset && row.fields.every((f) => n[f] === null)))
+      .map((row) => block(row.label, panel(row.render(n)))),
     ...settingsBlocks(r, queue),
   ];
 }
@@ -1095,6 +1287,7 @@ $('signout').onclick = async () => {
   await sb.auth.signOut();
   loadSeq++; // a load() still in flight must not render into the cleared list
   rows = [];
+  expandedPros.clear();
   counts = {};
   exact = new Set();
   activeTab = 'apps';
