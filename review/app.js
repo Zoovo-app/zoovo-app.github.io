@@ -1,15 +1,15 @@
 import { supabaseClient } from '/assets/supabase.js';
 import {
-  PRO_SORTS, allowedDecisions, asCaseRow, attentionLabel, bookingWhen, canCheckTransfer, canRequeue,
-  cancelRate, cancellationRows, cancellationText, caseItems, centsToInput, chatLines,
-  checkTransferConfirmText, confirmText, createRequestTracker, decisionButtonLabel,
+  CASE_CHANGED, PRO_SORTS, allowedDecisions, asCaseRow, attentionLabel, bookingWhen, canCheckTransfer,
+  canRequeue, cancelRate, cancellationRows, cancellationText, caseItems, centsToInput, chatLines,
+  checkTransferConfirmText, confirmText, createRequestTracker, decisionArgs, decisionButtonLabel,
   decisionNoticeText, decisionPreview, durationLabel, failedJobs, formatEuro, isOpenCase, kvkUrl,
-  methodLabel, moneyFlags, openProblems, parseEuroToCents, paymentStatusLabel, problemDetails,
-  proSubline, reasonCounts, recordRefundConfirmText, recordedText, refundRows, refundableCents,
-  requeueConfirmText, requeueableRefunds, requeuedText, retryConfirmText, reverseConfirmText,
-  reverseLabel, saveErrorText, savedText, seenLogId, sortPros, stateText, stripeTypeNote,
-  suggestedRefund, transferLabel, validateDecision, validateNote, verificationBadges, waitingSince,
-  whenLabel,
+  methodLabel, moneyFlags, openProblems, parseEuroToCents, paymentHealth, paymentStatusLabel,
+  problemDetails, proSubline, reasonCounts, recordRefundConfirmText, recordedText, refundRows,
+  refundableCents, requeueConfirmText, requeueableRefunds, requeuedText, retryConfirmText, retryLabel,
+  reverseConfirmText, reverseLabel, saveErrorText, savedText, sortPros, stateText, strayPaymentNote,
+  stripeTypeNote, suggestedRefund, transferLabel, validateDecision, validateNote, verificationBadges,
+  waitingSince, whenLabel,
 } from '/review/lib.js';
 
 // Applicants choose their avatar URL (the database only checks for https), so
@@ -297,6 +297,10 @@ const overlays = new Map(); // booking id -> {row, meta, seq}: seq is the load i
 const drafts = new Map(); // booking id -> {note, amount}
 const caseChats = new Map(); // booking id -> {status: 'loading'|'ok'|'error'|'missing', open, rows, message}
 const CHAT_LIMIT = 100;
+// The Payment health section under the cases (admin_payment_health), fetched
+// with each load of the tab: {status: 'loading'|'ok'|'error'|'missing', health, message}.
+let health = null;
+const HEALTH_LIMIT = 20;
 // A message above the list that must survive the reload an action triggers.
 let problemNotice = null;
 let keepNotice = false;
@@ -406,7 +410,7 @@ async function loadPros(seq) {
   if (error) {
     // Like the services: the other tabs work without it, so only this one says so.
     $('listMsg').textContent = error.code === 'PGRST202'
-      ? "The pros overview isn't set up yet. Apply migrations 104 to 111 from the Zoovo-app/zoovo-app repo, then reload this page."
+      ? "The pros overview isn't set up yet. Apply migrations 109 to 116 from the Zoovo-app/zoovo-app repo, then reload this page."
       : `Couldn't load pros: ${error.message}`;
     return;
   }
@@ -420,6 +424,7 @@ async function loadProblems(seq) {
   rows = []; // the list must never show another tab's rows
   caseChats.clear();
   chatPainters.clear();
+  loadHealth(seq); // drawn under the cases; it never holds them up
   const { data, error } = await sb.rpc('admin_list_problem_cases', { p_filter: 'open' });
   if (seq !== loadSeq) return;
   if (error) {
@@ -427,7 +432,7 @@ async function loadProblems(seq) {
     renderTabs();
     // Like the pros: the other tabs work without it, so only this one says so.
     $('listMsg').textContent = error.code === 'PGRST202'
-      ? "The problems view isn't set up yet. Apply migrations 104 to 111 from the Zoovo-app/zoovo-app repo, then reload this page."
+      ? "The problems view isn't set up yet. Apply migrations 109 to 116 from the Zoovo-app/zoovo-app repo, then reload this page."
       : `Couldn't load problems: ${error.message}`;
     return;
   }
@@ -445,6 +450,25 @@ async function loadProblems(seq) {
   counts.problems = openCount(); // the open list is the count
   renderTabs();
   renderList();
+}
+
+// admin_payment_health: what needs the team but has no case on this tab.
+async function loadHealth(seq) {
+  health = { status: 'loading' };
+  let answer;
+  try {
+    answer = await sb.rpc('admin_payment_health', { p_limit: HEALTH_LIMIT });
+  } catch (e) {
+    answer = { data: null, error: { message: e?.message ?? 'network error' } };
+  }
+  if (seq !== loadSeq) return; // a newer load() has taken over
+  const { data, error } = answer;
+  const parsed = error ? null : paymentHealth(data);
+  health = error?.code === 'PGRST202' ? { status: 'missing' }
+    : error ? { status: 'error', message: error.message }
+      : parsed ? { status: 'ok', health: parsed }
+        : { status: 'error', message: 'the answer isn’t a payment health list' };
+  $('list').querySelector('section.health')?.replaceWith(healthCard()); // once the cases are drawn
 }
 
 // The counts on the tabs. Each answer is dropped if a newer load() has started
@@ -616,7 +640,7 @@ function card(a) {
       textContent: c === 'other' && a.other_category_label ? `Other: ${a.other_category_label}` : (CATEGORIES[c] ?? c),
     })),
   );
-  // Without the verification fields (a database from before migration 107) the
+  // Without the verification fields (a database from before migration 112) the
   // badges are left out.
   const badges = verificationBadges(a.verification);
   const badgeTags = badges.length ? el('div', { className: 'tags' }, ...badges.map((b) => el('span', {
@@ -918,7 +942,39 @@ function renderProblems(capped, keepCard = false) {
     problemNotice ? notice(problemNotice.kind, problemNotice.text) : null,
     rows.length ? casesTable() : null,
     chosen ? caseCard(chosen) : null,
+    healthCard(),
   ].filter(Boolean));
+}
+
+// The Payment health section: the payments Stripe took that no booking holds,
+// and the scheduled jobs' errors, newest first. Ids and errors are shown as text.
+function healthCard() {
+  const body = [];
+  if (!health || health.status === 'loading') body.push(none('Loading…'));
+  else if (health.status === 'missing') {
+    body.push(none('Payment health isn’t set up yet. Apply migrations 109 to 116 from the Zoovo-app/zoovo-app repo.'));
+  } else if (health.status === 'error') {
+    body.push(el('span', { className: 'error', textContent: `Couldn’t load payment health: ${health.message}` }));
+  } else {
+    const { payments, errors } = health.health;
+    if (!payments.length && !errors.length) {
+      body.push(none('All clear: every payment Stripe took belongs to a booking, and no scheduled job logged an error.'));
+    }
+    if (payments.length) {
+      body.push(el('span', { className: 'colhead', textContent: 'PAYMENTS NO BOOKING HOLDS' }),
+        none('Stripe took these payments, but no booking records them. Refund them at Stripe.'),
+        ...payments.map((p) => el('span', {}, el('span', { className: 'ids', textContent: p.paymentIntentId ?? p.eventId }),
+          ` · received ${p.when}`)));
+    }
+    if (errors.length) {
+      body.push(el('span', { className: 'colhead', textContent: 'JOB ERRORS' }),
+        none('A scheduled job failed on a booking and skipped it. It tries that booking again on its next run; the same error is listed once.'),
+        ...errors.map((e) => el('span', {}, `${e.when} · ${e.job} · booking `, el('span', { className: 'ids', textContent: e.bookingId ?? '—' }),
+          e.error ? ` · ${e.error}` : '', e.sqlstate ? ` (${e.sqlstate})` : '')));
+    }
+    if (payments.length >= HEALTH_LIMIT || errors.length >= HEALTH_LIMIT) body.push(none(`The latest ${HEALTH_LIMIT} of each are shown.`));
+  }
+  return el('section', { className: 'card health' }, el('h2', { textContent: 'Payment health' }), ...body);
 }
 
 function casesTable() {
@@ -1018,6 +1074,8 @@ function caseCard(row) {
       el('h2', { textContent: `${[...new Set(items.map((i) => i.reason))].join(', ')} · ${b.service_title ?? 'Booking'}` }),
       tags,
       since ? el('span', { className: 'waiting', textContent: `${open.length ? 'Reported' : 'Failed'} ${whenLabel(since)} · waiting ${waited(since)}` }) : null),
+    // The case row doesn't detail this flag, so the card says what it stands for.
+    strayPaymentNote(row) ? notice('warn', strayPaymentNote(row)) : null,
     savedBanner,
     el('div', { className: 'cols' },
       pane('BOOKING',
@@ -1071,7 +1129,7 @@ function chatPanel(row, id) {
     if (!shown) return slot.replaceChildren();
     if (entry.status === 'loading') return slot.replaceChildren(none('Loading the chat…'));
     if (entry.status === 'missing') {
-      return slot.replaceChildren(none('The chat view isn’t set up yet. Apply migrations 104 to 111 from the Zoovo-app/zoovo-app repo.'));
+      return slot.replaceChildren(none('The chat view isn’t set up yet. Apply migrations 109 to 116 from the Zoovo-app/zoovo-app repo.'));
     }
     if (entry.status === 'error') return slot.replaceChildren(el('span', { className: 'error', textContent: `Couldn’t load the chat: ${entry.message}` }));
     const lines = chatLines(entry.rows, row);
@@ -1175,15 +1233,17 @@ function caseActions(row, id) {
     if (requests.isBusy(id)) return;
     const cents = decision === 'partial_refund' ? parseEuroToCents(amount.value) : null;
     const problem = validateDecision(row, decision, cents, note.value);
+    // A row that can't say what the reviewer saw is never sent: the list is loaded again, as after the RPC's
+    // own stale-view refusal.
+    if (problem === CASE_CHANGED) return reloadWith(CASE_CHANGED);
     if (problem) return refuse(problem, validateNote(note.value) ? note : amount);
     formError.textContent = '';
     if (!confirm(confirmText(row, decision, cents))) return;
-    // What the reviewer saw: the money log up to seen_log_id. The RPC refuses the decision when payment
-    // events arrived after it (then the list is reloaded, see finishCaseAction).
-    const seen = seenLogId(row);
-    go('admin_resolve_booking_problems',
-      { p_booking_id: id, p_decision: decision, p_refund_cents: cents, p_note: note.value.trim(),
-        ...(seen === null ? {} : { p_seen_log_id: seen }) }, button,
+    // What the reviewer saw: the money log up to seen_log_id (p_seen_log_id). The RPC refuses the decision
+    // when payment events arrived after it (then the list is reloaded, see finishCaseAction).
+    const args = decisionArgs(row, decision, cents, note.value);
+    if (!args) return reloadWith(CASE_CHANGED); // validateDecision checked the row already; never send a guess
+    go('admin_resolve_booking_problems', args, button,
       // The problems open on the card that was on screen: the answer must have closed these. A case with
       // none open is checked by the refund it asked for (cents, on top of what was refunded before).
       { kind: 'decision', decision, ids: openProblems(row).map((p) => p.id),
@@ -1298,13 +1358,13 @@ function caseActions(row, id) {
       box.append(optionRow('', hint(`Can’t retry the ${job.label}: ${job.refusal ?? 'the database did not say why'}.${failedWith ? ` ${failedWith}` : ''}`)));
       continue;
     }
-    const retry = el('button', { type: 'button', className: 'btn navy', textContent: `Retry the ${job.label}`, disabled: busy });
+    const retry = el('button', { type: 'button', className: 'btn navy', textContent: retryLabel(job), disabled: busy });
     retry.onclick = () => {
-      if (!confirm(retryConfirmText(job))) return;
+      if (!confirm(retryConfirmText(job, row))) return;
       formError.textContent = '';
       go('admin_retry_payment_job', { p_job_id: job.id }, retry, { kind: 'retry' });
     };
-    box.append(optionRow('', retry, hint(failedWith || 'This job failed. Retrying sends it again with the same key.')));
+    box.append(optionRow('', retry, hint(failedWith || 'This job failed.')));
   }
   if (moneyFailed && !jobs.length) {
     box.append(el('span', { className: 'muted', textContent: 'A refund or transfer failed, but the database did not say which job, so it can’t be retried from here.' }));
@@ -1314,23 +1374,27 @@ function caseActions(row, id) {
   return box;
 }
 
+// Says why above the Problems list (an alert when the reviewer has moved to
+// another tab, so the message isn't lost) and loads the list again, so the
+// card shows what is true now.
+function reloadWith(text) {
+  if (activeTab !== 'problems') alert(text);
+  else {
+    problemNotice = { kind: 'bad', text: `${text} The list was reloaded; check the case before trying again.` };
+    keepNotice = true;
+  }
+  return load();
+}
+
 // What to do with the answer to an action. `meta` is what was sent ({kind,
 // decision, ids}). An answer that no request is waiting for (the reviewer
 // signed out meanwhile) is ignored. A success shows the row the database sent
-// back; an error, or an answer that isn't a case, reloads the list so the card
-// shows what is true now.
+// back; an error (the stale-view refusal reads CASE_CHANGED), or an answer
+// that isn't a case, reloads the list so the card shows what is true now.
 async function finishCaseAction(id, token, meta, { data, error }) {
   if (!requests.finish(id, token)) return;
   const here = activeTab === 'problems';
-  if (error) {
-    const text = saveErrorText(error);
-    if (!here) alert(text); // the reviewer has moved to another tab: don't lose the message
-    else {
-      problemNotice = { kind: 'bad', text: `${text} The list was reloaded; check the case before trying again.` };
-      keepNotice = true;
-    }
-    return load();
-  }
+  if (error) return reloadWith(saveErrorText(error));
   const updated = asCaseRow(data, id);
   // The note and the amount are spent once the database took the action and
   // answered with the case (or, for a reversal, with anything); a retry uses neither.
@@ -1814,6 +1878,7 @@ $('signout').onclick = async () => {
   savedCases.clear();
   caseChats.clear();
   chatPainters.clear();
+  health = null;
   counts = {};
   exact = new Set();
   activeTab = 'apps';

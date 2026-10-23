@@ -14,7 +14,8 @@ import {
   transferredCents, reverseLabel, notifiedText, decisionButtonLabel, moneyFlags,
   recordRefundConfirmText, recordedText, requeueableRefunds, canRequeue, requeueConfirmText,
   requeuedText, seenLogId, decisionNoticeText, canCheckTransfer, checkTransferConfirmText,
-  stripeRefundStatusLabel,
+  stripeRefundStatusLabel, decisionArgs, CASE_CHANGED, retryLabel, paymentHealth, strayPayment,
+  strayPaymentNote,
 } from './lib.js';
 
 // verification as admin_list_pro_applications and admin_list_pros return it:
@@ -300,8 +301,14 @@ const caseRow = (over = {}, booking = {}) => ({
   problems: [wentWrong],
   attention: 'problem',
   suggested_no_show_refund_cents: 0,
+  seen_log_id: 7,
   ...over,
 });
+// The same row without the key at all (a server that doesn't send it).
+const withoutSeen = (row) => {
+  const { seen_log_id: _gone, ...rest } = row;
+  return rest;
+};
 const NORMAL = ['full_refund', 'partial_refund', 'release'];
 const NOTE = 'Checked the chat; the walk happened, so we refund half.';
 
@@ -503,17 +510,17 @@ test('failed_jobs', () => {
   const row = caseRow({
     problems: [], attention: 'refund_failed',
     failed_jobs: [
-      { id: 'j1', kind: 'refund', last_error: 'card closed' },
-      { id: 'j2', kind: 'transfer', last_error: null },
+      { id: 'j1', kind: 'refund', last_error: 'card closed', amount_cents: 700 },
+      { id: 'j2', kind: 'transfer', last_error: null, amount_cents: 1200 },
       { id: 'j3', kind: 'something_else' },
       { kind: 'refund' }, null, 'x',
     ],
   });
   // The database says which failed jobs can be retried (payment_job_retry_refusal): retryable, else the reason.
   assert.deepEqual(failedJobs(row), [
-    { id: 'j1', kind: 'refund', label: 'refund', error: 'card closed', retryable: false, refusal: null },
-    { id: 'j2', kind: 'transfer', label: 'transfer', error: null, retryable: false, refusal: null },
-    { id: 'j3', kind: 'something_else', label: 'payment job', error: null, retryable: false, refusal: null },
+    { id: 'j1', kind: 'refund', label: 'refund', cents: 700, error: 'card closed', retryable: false, refusal: null },
+    { id: 'j2', kind: 'transfer', label: 'transfer', cents: 1200, error: null, retryable: false, refusal: null },
+    { id: 'j3', kind: 'something_else', label: 'payment job', cents: null, error: null, retryable: false, refusal: null },
   ]);
   const shaped = failedJobs(caseRow({
     failed_jobs: [
@@ -532,7 +539,11 @@ test('failed_jobs', () => {
   assert.equal(failedJobs(caseRow({ failed_jobs: [{ id: 'j4', kind: 'transfer_reversal' }] }))[0].label, 'transfer reversal');
   // A lookup of a transfer at Stripe is a job too (its retryable and retry_refusal mean what they do for the others).
   assert.deepEqual(failedJobs(caseRow({ failed_jobs: [{ id: 'j5', kind: 'transfer_lookup', last_error: 'timeout', retryable: true, retry_refusal: null }] })),
-    [{ id: 'j5', kind: 'transfer_lookup', label: 'transfer lookup', error: 'timeout', retryable: true, refusal: null }]);
+    [{ id: 'j5', kind: 'transfer_lookup', label: 'transfer lookup', cents: null, error: 'timeout', retryable: true, refusal: null }]);
+  // amount_cents (what a retry asks Stripe for) only as a whole number of at least 0.
+  for (const bad of ['700', -1, 1.5, null, undefined]) {
+    assert.equal(failedJobs(caseRow({ failed_jobs: [{ id: 'j6', kind: 'refund', amount_cents: bad }] }))[0].cents, null, String(bad));
+  }
   for (const none of [caseRow(), null, { failed_jobs: 'x' }]) assert.deepEqual(failedJobs(none), []);
 });
 
@@ -746,7 +757,6 @@ test('decision_texts_name_the_amount', () => {
     'Reverse the transfer of €17.60 to Happy Paws Walking? The money is taken back from their Stripe account.');
   // Without it the amount is not known, so none is named (never the payout's).
   assert.equal(reverseConfirmText(sent), 'Reverse the transfer to Happy Paws Walking? The money is taken back from their Stripe account.');
-  assert.match(retryConfirmText({ kind: 'refund', label: 'refund' }), /^Retry the failed refund\?/);
 });
 
 test('saved_text_names_the_decision_just_made', () => {
@@ -1102,19 +1112,19 @@ test('seen_log_id_is_sent_with_every_decision', () => {
   assert.equal(seenLogId(caseRow({ seen_log_id: 0 })), 0);
   // A booking with nothing in its money log has none: 0, "I have seen nothing", which the RPC accepts.
   assert.equal(seenLogId(caseRow({ seen_log_id: null })), 0);
-  // A database from before it has no such key: nothing to send.
-  assert.equal(seenLogId(caseRow()), null);
+  // A row without the key: nothing to send.
+  assert.equal(seenLogId(withoutSeen(caseRow())), null);
   assert.equal(seenLogId(null), null);
   // A value that is not a whole number of at least 0 is not sent.
   for (const bad of ['41', -1, 1.5, NaN, Infinity, {}, [], 2 ** 60]) assert.equal(seenLogId(caseRow({ seen_log_id: bad })), null, String(bad));
 
-  // validateDecision refuses to send a decision on a row whose seen_log_id can't be used.
+  // validateDecision refuses to send a decision on a row that can't say what was seen: missing or unusable.
   const check = (over, decision = 'release') => validateDecision(caseRow(over), decision, null, NOTE);
   assert.equal(check({ seen_log_id: 41 }), null);
   assert.equal(check({ seen_log_id: null }), null);
-  assert.equal(check({}), null);
-  assert.match(check({ seen_log_id: 'x' }), /seen_log_id.*reload/i);
-  assert.match(check({ seen_log_id: -3 }), /seen_log_id.*reload/i);
+  assert.equal(validateDecision(withoutSeen(caseRow()), 'release', null, NOTE), CASE_CHANGED);
+  assert.equal(check({ seen_log_id: 'x' }), CASE_CHANGED);
+  assert.equal(check({ seen_log_id: -3 }), CASE_CHANGED);
 });
 
 test('acknowledge_a_mismatch', () => {
@@ -1183,9 +1193,150 @@ test('check_a_transfer_at_stripe', () => {
 test('reload_errors_say_so', () => {
   // The two refusals of a decision made on a case that has moved on (22023 invalid_input, M4-R17).
   const events = saveErrorText({ code: '22023', hint: 'invalid_input', message: 'new payment events arrived, reload' });
-  assert.equal(events, 'Couldn’t save: new payment events arrived on this booking while you were looking at it.');
+  assert.equal(events, CASE_CHANGED);
   const stale = saveErrorText({ code: '22023', hint: 'invalid_input', message: 'stale or foreign case row: reload it' });
-  assert.equal(stale, 'Couldn’t save: this case row is out of date.');
-  assert.equal(saveErrorText({ message: 'New payment events arrived, reload' }), events); // by message alone, any case
+  assert.equal(stale, CASE_CHANGED);
+  assert.equal(saveErrorText({ message: 'New payment events arrived, reload' }), CASE_CHANGED); // by message alone, any case
   assert.match(saveErrorText({ hint: 'invalid_input', message: 'p_seen_log_id is required: send the case row’s seen_log_id' }), /refused.*p_seen_log_id is required/);
+});
+
+// ---------------------------------------------------------------------------
+// Final review: the decision's arguments, the stale view, retries, payment
+// health and a payment on another PaymentIntent
+// ---------------------------------------------------------------------------
+
+test('decision_args', () => {
+  // Exactly what admin_resolve_booking_problems takes: the booking, the decision, the cents, the trimmed note, the seen money log.
+  assert.deepEqual(decisionArgs(caseRow({ seen_log_id: 41 }), 'partial_refund', 1150, `  ${NOTE}\n`), {
+    p_booking_id: 'b1', p_decision: 'partial_refund', p_refund_cents: 1150, p_note: NOTE, p_seen_log_id: 41,
+  });
+  // The cents go only with a partial refund; a full refund's amount is the server's to work out.
+  for (const decision of ['full_refund', 'release', 'withhold', 'acknowledge']) {
+    assert.deepEqual(decisionArgs(caseRow(), decision, 1150, NOTE), {
+      p_booking_id: 'b1', p_decision: decision, p_refund_cents: null, p_note: NOTE, p_seen_log_id: 7,
+    });
+  }
+  assert.equal(decisionArgs(caseRow(), 'partial_refund', 1.5, NOTE).p_refund_cents, null);
+  // A booking with nothing in its money log (seen_log_id null) sends 0, which the RPC accepts.
+  assert.equal(decisionArgs(caseRow({ seen_log_id: null }), 'release', null, NOTE).p_seen_log_id, 0);
+  // Nothing is built for a row that can't say what was seen, or that names no booking: the call is never sent.
+  assert.equal(decisionArgs(withoutSeen(caseRow()), 'release', null, NOTE), null);
+  for (const bad of ['41', -1, 1.5, {}]) assert.equal(decisionArgs(caseRow({ seen_log_id: bad }), 'release', null, NOTE), null, String(bad));
+  assert.equal(decisionArgs(caseRow({}, { id: null }), 'release', null, NOTE), null);
+  assert.equal(decisionArgs(caseRow({}, { id: '' }), 'release', null, NOTE), null);
+  assert.equal(decisionArgs(null, 'release', null, NOTE), null);
+});
+
+test('stale_view_says_the_case_changed', () => {
+  // One message for the server's two stale-view refusals and for a row the page can't send at all.
+  assert.match(CASE_CHANGED, /^This case changed/);
+  assert.match(CASE_CHANGED, /nothing was saved/);
+  // The row is checked first: with no usable seen_log_id nothing about the form matters, since nothing can be sent.
+  assert.equal(validateDecision(withoutSeen(caseRow()), 'release', null, ''), CASE_CHANGED);
+  assert.equal(validateDecision(withoutSeen(caseRow()), 'partial_refund', 0, NOTE), CASE_CHANGED);
+  assert.equal(validateDecision(withoutSeen(caseRow({ allowed_decisions: [] })), 'release', null, NOTE), CASE_CHANGED);
+  // Other refusals keep their own words.
+  assert.match(saveErrorText({ hint: 'invalid_input', message: 'The note is 5 to 1000 characters' }), /refused.*note is 5 to 1000/);
+});
+
+test('retry_confirm_names_the_amount', () => {
+  const jobs = failedJobs(caseRow({
+    problems: [], attention: 'refund_failed',
+    failed_jobs: [
+      { id: 'r', kind: 'refund', amount_cents: 700, retryable: true, retry_refusal: null },
+      { id: 'v', kind: 'transfer_reversal', amount_cents: 1760, retryable: true, retry_refusal: null },
+      { id: 't', kind: 'transfer', amount_cents: 1200, retryable: true, retry_refusal: null },
+      { id: 'l', kind: 'transfer_lookup', amount_cents: null, retryable: true, retry_refusal: null },
+      { id: 'c', kind: 'cancel_intent', amount_cents: null, retryable: true, retry_refusal: null },
+      { id: 'n', kind: 'refund', retryable: true, retry_refusal: null },
+    ],
+  }));
+  const row = caseRow();
+  const text = (id) => retryConfirmText(jobs.find((j) => j.id === id), row);
+  // A refund and a reversal run again under their own key: Stripe can't make them twice.
+  assert.equal(text('r'), 'Retry the failed refund of €7 to Daan Visser? Stripe receives it again with the same key, so it can’t happen twice.');
+  assert.equal(text('v'), 'Retry the failed transfer reversal of €17.60 from Happy Paws Walking? Stripe receives it again with the same key, so it can’t happen twice.');
+  // A transfer goes out at the payout as it is now (under a new key when that changed): no such promise.
+  assert.equal(text('t'), 'Retry the failed transfer to Happy Paws Walking? It is sent again at the current payout amount, €12.');
+  assert.doesNotMatch(text('t'), /same key|twice/);
+  // A lookup and a cancellation move no money and name none.
+  assert.equal(text('l'), 'Retry the failed transfer lookup? It only asks Stripe whether the transfer exists; no money moves.');
+  assert.equal(text('c'), 'Retry the failed payment cancellation? Stripe is asked again to cancel the payment that was never taken; no money moves.');
+  for (const id of ['l', 'c']) assert.doesNotMatch(text(id), /same key|€/);
+  // Without an amount in the row none is named, but the promise still holds for a refund.
+  assert.equal(text('n'), 'Retry the failed refund to Daan Visser? Stripe receives it again with the same key, so it can’t happen twice.');
+  assert.equal(retryConfirmText({ id: 'x', kind: 'transfer', label: 'transfer', cents: null }, row),
+    'Retry the failed transfer to Happy Paws Walking? It is sent again at the current payout amount.');
+  // Deleted accounts and unknown kinds still read well.
+  assert.match(retryConfirmText(jobs[0], caseRow({ customer: null })), /^Retry the failed refund of €7 to the pet parent\?/);
+  assert.equal(retryConfirmText({ id: 'z', kind: 'mystery', label: 'payment job', cents: 500 }, row), 'Retry the failed payment job?');
+  assert.equal(retryConfirmText(null, null), 'Retry the failed payment job?');
+  // The button names the amount where money moves.
+  assert.deepEqual(jobs.map(retryLabel), [
+    'Retry the refund · €7', 'Retry the transfer reversal · €17.60', 'Retry the transfer · €12',
+    'Retry the transfer lookup', 'Retry the payment cancellation', 'Retry the refund',
+  ]);
+});
+
+test('payment_health', () => {
+  // admin_payment_health, newest first, as the section shows it.
+  const health = paymentHealth({
+    unplaced_payments: [
+      { event_id: 'evt_2', payment_intent_id: 'pi_stray', received_at: '2026-10-21T08:00:00Z' },
+      { event_id: 'evt_1', payment_intent_id: null, received_at: null },
+      null, 'x', { event_id: 'evt_0' },
+    ],
+    job_errors: [
+      { log_id: 90, booking_id: 'b9', job: 'schedule_due_payouts', sqlstate: '23514', error: 'new row violates check', created_at: '2026-10-22T10:00:00Z' },
+      { log_id: 80, booking_id: 'b8', job: 'retry_payment_jobs', sqlstate: null, error: null, created_at: '2026-10-22T09:00:00Z' },
+      { log_id: 70, booking_id: 'b7', job: 'brand_new_job', sqlstate: 'P0001', error: '  boom  ', created_at: 'nope' },
+      { booking_id: 'b6' }, null,
+    ],
+  });
+  assert.deepEqual(health.payments, [
+    { eventId: 'evt_2', paymentIntentId: 'pi_stray', when: 'Wed 21 Oct, 10:00' },
+    { eventId: 'evt_1', paymentIntentId: null, when: '—' },
+    { eventId: 'evt_0', paymentIntentId: null, when: '—' },
+  ]);
+  assert.deepEqual(health.errors, [
+    { logId: 90, bookingId: 'b9', job: 'Scheduling payouts', error: 'new row violates check', sqlstate: '23514', when: 'Thu 22 Oct, 12:00' },
+    { logId: 80, bookingId: 'b8', job: 'Retrying payment jobs', error: null, sqlstate: null, when: 'Thu 22 Oct, 11:00' },
+    { logId: 70, bookingId: 'b7', job: 'brand_new_job', error: 'boom', sqlstate: 'P0001', when: '—' },
+  ]);
+  assert.equal(paymentHealth({ job_errors: [{ log_id: 1, booking_id: 'b', job: 'expire_booking_holds' }] }).errors[0].job, 'Expiring payment holds');
+  assert.equal(paymentHealth({ job_errors: [{ log_id: 1, booking_id: 'b', job: 'complete_ended_bookings' }] }).errors[0].job, 'Completing ended bookings');
+  assert.equal(paymentHealth({ job_errors: [{ log_id: 1, booking_id: 'b', job: null }] }).errors[0].job, 'A scheduled job');
+  // Nothing to report is an empty answer, not a missing one.
+  assert.deepEqual(paymentHealth({ unplaced_payments: [], job_errors: [] }), { payments: [], errors: [] });
+  assert.deepEqual(paymentHealth({}), { payments: [], errors: [] });
+  for (const bad of [null, undefined, [], 'x', 7]) assert.equal(paymentHealth(bad), null, String(bad));
+});
+
+test('payment_on_another_intent', () => {
+  // refund_failed with no open refund_failed problem and no money flag: the one flag the case row doesn't detail.
+  const stray = caseRow({ problems: [], attention: 'refund_failed', money_flags: [], allowed_decisions: ['full_refund', 'partial_refund', 'release', 'acknowledge'] });
+  assert.equal(strayPayment(stray), true);
+  assert.deepEqual(caseItems(stray), [{ who: 'Zoovo', role: 'automatic check', reason: 'Payment on another PaymentIntent' }]);
+  // A resolved problem from before doesn't explain a flag that is open now.
+  assert.equal(strayPayment({ ...stray, problems: [{ ...wentWrong, status: 'resolved', resolution: 'release' }] }), true);
+  // Anything the row does show explains the flag, and then it is not called a payment on another PaymentIntent.
+  const refundFailed = { ...wentWrong, kind: 'refund_failed', reporter_role: null };
+  assert.equal(strayPayment({ ...stray, problems: [refundFailed] }), false);
+  assert.equal(strayPayment({ ...stray, money_flags: [{ log_id: 3, event: 'refund_external', stripe_refund_id: 're_1' }] }), false);
+  assert.equal(caseItems({ ...stray, problems: [refundFailed] })[0].reason, 'Refund failed');
+  // Other attention, a row without money_flags (it can't say), or no row: no guess.
+  for (const attention of ['transfer_failed', 'payout_mismatch', 'problem', null]) assert.equal(strayPayment({ ...stray, attention }), false, String(attention));
+  const { money_flags: _flags, ...noFlags } = stray;
+  assert.equal(strayPayment(noFlags), false);
+  assert.equal(caseItems(noFlags)[0].reason, 'Refund failed');
+  assert.equal(strayPayment(null), false);
+
+  // The card's note: what the flag stands for, where to refund, and why not here.
+  assert.equal(strayPaymentNote(stray),
+    'Refund failed here means a payment Stripe took on another PaymentIntent than this booking’s own (Payment, below); the case doesn’t say which. Find it at Stripe and refund it there, then Acknowledge. A refund decision here would refund the booking’s own payment, not that one.');
+  // Acknowledge is named only when the case offers it (an open report rules it out).
+  assert.equal(strayPaymentNote({ ...stray, problems: [wentWrong], allowed_decisions: ['full_refund', 'partial_refund', 'release'] }),
+    'Refund failed here means a payment Stripe took on another PaymentIntent than this booking’s own (Payment, below); the case doesn’t say which. Find it at Stripe and refund it there. A refund decision here would refund the booking’s own payment, not that one.');
+  assert.equal(strayPaymentNote({ ...stray, problems: [refundFailed] }), null);
+  assert.equal(strayPaymentNote(null), null);
 });

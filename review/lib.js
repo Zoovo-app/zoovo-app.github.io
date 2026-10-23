@@ -21,7 +21,7 @@ export function kvkUrl(kvk) {
 // payouts_enabled, transfers_active, requirements_due, business_type}. Each
 // state is 'ok', 'pending' (Stripe is working on it), 'todo' (not started) or
 // 'attention' (the pro has to act again). Without a verification object (a
-// database from before migration 107) there is nothing to show: [].
+// database from before migration 112) there is nothing to show: [].
 export function verificationBadges(v) {
   if (!v || typeof v !== 'object' || Array.isArray(v)) return [];
   return [
@@ -279,6 +279,29 @@ export function isOpenCase(row) {
   return openProblems(row).length > 0 || attentionLabel(row) !== '';
 }
 
+// Whether a refund_failed case stands for a payment Stripe took on another
+// PaymentIntent than the booking's. The database lists that flag as
+// refund_failed (115's booking_money_attention), and the case row has no
+// detail of it: money_flags holds only the outside and conflicting refunds.
+// So it is the case whose row shows nothing else for refund_failed: no open
+// refund_failed problem (every failed refund opens one) and no money flag. A
+// row without money_flags can't say, so no guess is made.
+export function strayPayment(row) {
+  if (!isObject(row) || row.attention !== 'refund_failed' || !Array.isArray(row.money_flags)) return false;
+  return row.money_flags.length === 0 && !openProblems(row).some((p) => p.kind === 'refund_failed');
+}
+
+// The case card's note for such a case, or null. That payment is refunded at
+// Stripe: a refund decision here refunds the booking's own PaymentIntent.
+// Acknowledging answers the flag, where the case offers it.
+export function strayPaymentNote(row) {
+  if (!strayPayment(row)) return null;
+  const then = allowedDecisions(row).includes('acknowledge') ? ', then Acknowledge' : '';
+  return 'Refund failed here means a payment Stripe took on another PaymentIntent than this booking’s own (Payment, below); '
+    + `the case doesn’t say which. Find it at Stripe and refund it there${then}. `
+    + 'A refund decision here would refund the booking’s own payment, not that one.';
+}
+
 const DECISIONS = ['full_refund', 'partial_refund', 'release', 'withhold', 'acknowledge'];
 
 // The decisions the RPC accepts for this case. The case row says so itself
@@ -317,8 +340,9 @@ export function validateNote(note) {
 // p_seen_log_id with a decision: the RPC refuses a decision when payment events
 // arrived after it ("new payment events arrived, reload"). A booking with
 // nothing in its money log has null: 0, "nothing seen", which the RPC accepts.
-// A row without the key (a database from before it) has nothing to send: null,
-// and so has a value that isn't a whole number of at least 0.
+// A row without the key has nothing to send: null, and so has a value that
+// isn't a whole number of at least 0. The RPC requires it, so no decision is
+// sent for such a row (validateDecision, decisionArgs).
 export function seenLogId(row) {
   if (!isObject(row)) return null;
   const id = row.seen_log_id;
@@ -326,13 +350,40 @@ export function seenLogId(row) {
   return Number.isSafeInteger(id) && id >= 0 ? id : null;
 }
 
+// What the reviewer reads when the case moved on under them: the RPC refused a
+// decision made on an older view of it (M4-R17: new payment events arrived, or
+// the row is stale), or the row on screen can't say which view it is (no
+// usable seen_log_id), so nothing was sent. The page reloads the list either way.
+export const CASE_CHANGED = 'This case changed while you were looking at it, so nothing was saved.';
+
+// The arguments of admin_resolve_booking_problems for `decision` on `row`: the
+// booking, the decision, the refund in cents (a partial refund's only; the
+// server works out a full refund), the note trimmed, and p_seen_log_id, the
+// money log the row reflects. null when the row can't say what was seen, or
+// names no booking: then nothing may be sent. Check the decision with
+// validateDecision first; this only builds what is sent.
+export function decisionArgs(row, decision, refundCents, note) {
+  const seen = seenLogId(row);
+  const id = bookingOf(row).id;
+  if (seen === null || typeof id !== 'string' || id === '') return null;
+  return {
+    p_booking_id: id,
+    p_decision: decision,
+    p_refund_cents: decision === 'partial_refund' && Number.isInteger(refundCents) ? refundCents : null,
+    p_note: typeof note === 'string' ? note.trim() : '',
+    p_seen_log_id: seen,
+  };
+}
+
 const NO_PRICE = 'This booking has no price on record, so a refund can’t be worked out here.';
 
 // null when the decision can be sent, else the sentence to show. Mirrors
-// admin_resolve_booking_problems: an allowed decision, a note of 5 to 1000
-// characters, and for a partial refund 1 cent up to price - refunded.
-// `refundCents` only matters for 'partial_refund'.
+// admin_resolve_booking_problems: a row that says what was seen (else
+// CASE_CHANGED, before anything else: nothing can be sent for it), an allowed
+// decision, a note of 5 to 1000 characters, and for a partial refund 1 cent up
+// to price - refunded. `refundCents` only matters for 'partial_refund'.
 export function validateDecision(row, decision, refundCents, note) {
+  if (seenLogId(row) === null) return CASE_CHANGED;
   const allowed = allowedDecisions(row);
   if (!allowed.includes(decision)) {
     if (allowed.length === 0) {
@@ -347,10 +398,6 @@ export function validateDecision(row, decision, refundCents, note) {
   }
   const noteProblem = validateNote(note);
   if (noteProblem) return noteProblem;
-  // A row that has the key but no usable value can't say what was seen: reload it rather than send a guess.
-  if (isObject(row) && Object.hasOwn(row, 'seen_log_id') && seenLogId(row) === null) {
-    return 'This case row has no usable seen_log_id: reload the list.';
-  }
   if (decision !== 'full_refund' && decision !== 'partial_refund') return null;
 
   const left = refundableCents(row);
@@ -422,11 +469,13 @@ const JOB_KINDS = {
   transfer_lookup: 'transfer lookup',
 };
 
-// The payment jobs that failed: [{id, kind, label, error, retryable, refusal}].
-// The case row names them in `failed_jobs` ({id, kind, last_error, retryable,
-// retry_refusal}). The database decides whether a retry is accepted
-// (payment_job_retry_refusal): only `retryable: true`, without a refusal, is
-// a yes. Otherwise `refusal` says why, when it said.
+// The payment jobs that failed: [{id, kind, label, cents, error, retryable,
+// refusal}]. The case row names them in `failed_jobs` ({id, kind, amount_cents,
+// last_error, retryable, retry_refusal}); `cents` is amount_cents, what a retry
+// asks Stripe for (for a transfer, the payout now), or null. The database
+// decides whether a retry is accepted (payment_job_retry_refusal): only
+// `retryable: true`, without a refusal, is a yes. Otherwise `refusal` says
+// why, when it said.
 export function failedJobs(row) {
   const list = isObject(row) ? row.failed_jobs : null;
   if (!Array.isArray(list)) return [];
@@ -436,6 +485,7 @@ export function failedJobs(row) {
       id: j.id,
       kind: typeof j.kind === 'string' ? j.kind : null,
       label: typeof j.kind === 'string' && Object.hasOwn(JOB_KINDS, j.kind) ? JOB_KINDS[j.kind] : 'payment job',
+      cents: Number.isInteger(j.amount_cents) && j.amount_cents >= 0 ? j.amount_cents : null,
       error: trimmed(j.last_error),
       retryable: j.retryable === true && refusal === null,
       refusal,
@@ -527,14 +577,18 @@ function reporterOf(problem, row) {
   return { who: 'Zoovo', role: 'opened automatically' };
 }
 
+const STRAY_PAYMENT = 'Payment on another PaymentIntent';
+
 // The list's "reported by" and "reason" cells, one entry per open problem. A
 // case that is only here because money failed has no problem to name: the
-// system is the reporter. Once every problem is resolved (the page keeps the
-// case on screen to show the answer) the resolved ones are named instead.
+// system is the reporter, and the reason is the attention (a payment on
+// another PaymentIntent by that name). Once every problem is resolved (the
+// page keeps the case on screen to show the answer) the resolved ones are
+// named instead.
 export function caseItems(row) {
   const open = openProblems(row);
   const all = isObject(row) && Array.isArray(row.problems) ? row.problems.filter(isObject) : [];
-  const failure = attentionLabel(row);
+  const failure = strayPayment(row) ? STRAY_PAYMENT : attentionLabel(row);
   if (open.length === 0 && (failure !== '' || all.length === 0)) {
     return [{ who: 'Zoovo', role: 'automatic check', reason: failure || 'Nothing open' }];
   }
@@ -790,9 +844,36 @@ export function reverseConfirmText(row) {
   return `Reverse the transfer${sent === null ? '' : ` of ${formatEuro(sent)}`} to ${proName(row)}? The money is taken back from their Stripe account.`;
 }
 
-// `job` is an entry of failedJobs().
-export function retryConfirmText(job) {
-  return `Retry the failed ${job?.label ?? 'payment job'}? Stripe receives it again with the same key, so it can’t happen twice.`;
+// The kinds whose amount the retry's button and question name: the money ones.
+const MONEY_JOBS = ['refund', 'transfer', 'transfer_reversal'];
+const jobAmount = (job) => (MONEY_JOBS.includes(job?.kind) && Number.isInteger(job?.cents) ? job.cents : null);
+
+// The retry button: "Retry the refund · €7". `job` is an entry of failedJobs().
+export function retryLabel(job) {
+  const cents = jobAmount(job);
+  return `Retry the ${job?.label ?? 'payment job'}${cents === null ? '' : ` · ${formatEuro(cents)}`}`;
+}
+
+// The question before a retry, with the amount it asks Stripe for (the case
+// row's failed_jobs[].amount_cents). A refund and a reversal run again under
+// their own idempotency key, so Stripe answers a call it already made and
+// can't make them twice. A transfer is sent again for the payout as it is now,
+// under a new key when that amount changed (M4-R11), so it makes no such
+// promise. `job` is an entry of failedJobs().
+export function retryConfirmText(job, row) {
+  const cents = jobAmount(job);
+  const of = cents === null ? '' : ` of ${formatEuro(cents)}`;
+  const once = 'Stripe receives it again with the same key, so it can’t happen twice.';
+  switch (job?.kind) {
+    case 'refund': return `Retry the failed refund${of} to ${customerName(row)}? ${once}`;
+    case 'transfer_reversal': return `Retry the failed transfer reversal${of} from ${proName(row)}? ${once}`;
+    case 'transfer':
+      return `Retry the failed transfer to ${proName(row)}? It is sent again at the current payout amount${cents === null ? '' : `, ${formatEuro(cents)}`}.`;
+    case 'transfer_lookup': return 'Retry the failed transfer lookup? It only asks Stripe whether the transfer exists; no money moves.';
+    case 'cancel_intent':
+      return 'Retry the failed payment cancellation? Stripe is asked again to cancel the payment that was never taken; no money moves.';
+    default: return `Retry the failed ${job?.label ?? 'payment job'}?`;
+  }
 }
 
 // ---- Refunds made outside, and refunds that failed for good -------------------
@@ -995,10 +1076,7 @@ function savedFlagText(row, sent) {
 export function saveErrorText(error) {
   const message = trimmed(error?.message);
   // A decision made on a case that has moved on (M4-R17): the reviewer must read it again.
-  if (/new payment events arrived/i.test(message ?? '')) {
-    return 'Couldn’t save: new payment events arrived on this booking while you were looking at it.';
-  }
-  if (/stale or foreign case row/i.test(message ?? '')) return 'Couldn’t save: this case row is out of date.';
+  if (/new payment events arrived|stale or foreign case row/i.test(message ?? '')) return CASE_CHANGED;
   if (error?.hint === 'invalid_input' || /invalid_input/.test(message ?? '')) {
     const named = message && message !== 'invalid_input' ? ` (${message})` : ' (invalid_input)';
     return `Couldn’t save: the server refused it${named}. Another reviewer may have decided this case already, or the note or amount isn’t valid.`;
@@ -1028,6 +1106,42 @@ export function chatLines(messages, row) {
       muted: system || deleted,
     };
   });
+}
+
+// ---- Payment health ------------------------------------------------------------
+
+// The scheduled jobs that log a job_error (116's booking_log_job_error).
+const SCHEDULED_JOBS = {
+  expire_booking_holds: 'Expiring payment holds',
+  complete_ended_bookings: 'Completing ended bookings',
+  schedule_due_payouts: 'Scheduling payouts',
+  retry_payment_jobs: 'Retrying payment jobs',
+};
+
+// admin_payment_health ({unplaced_payments: [{event_id, payment_intent_id,
+// received_at}], job_errors: [{log_id, booking_id, job, sqlstate, error,
+// created_at}]}, each newest first) as the Payment health section shows it:
+// {payments: [{eventId, paymentIntentId, when}], errors: [{logId, bookingId,
+// job, error, sqlstate, when}]}. An entry without its id is left out; a
+// missing list is empty. null when the answer isn't an object.
+export function paymentHealth(data) {
+  if (!isObject(data)) return null;
+  const list = (v) => (Array.isArray(v) ? v.filter(isObject) : []);
+  return {
+    payments: list(data.unplaced_payments).filter((p) => trimmed(p.event_id)).map((p) => ({
+      eventId: trimmed(p.event_id),
+      paymentIntentId: trimmed(p.payment_intent_id),
+      when: whenLabel(p.received_at),
+    })),
+    errors: list(data.job_errors).filter((e) => Number.isSafeInteger(e.log_id)).map((e) => ({
+      logId: e.log_id,
+      bookingId: trimmed(e.booking_id),
+      job: typeof e.job === 'string' && e.job ? lookup(SCHEDULED_JOBS, e.job) : 'A scheduled job',
+      error: trimmed(e.error),
+      sqlstate: trimmed(e.sqlstate),
+      when: whenLabel(e.created_at),
+    })),
+  };
 }
 
 // ---- One request per case ------------------------------------------------------

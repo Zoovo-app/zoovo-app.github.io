@@ -150,4 +150,7 @@ table.cases{width:100%;min-width:760px;border-collapse:collapse;font-size:14px}
 .banner.ok{background:#e3f4e9;color:#1d6b3a}
 .banner.warn{background:#fff6e0;color:#6b4700;border:1px solid #f2d58a}
 .banner.bad{background:#fdecea;color:#b3261e}
+.health{display:flex;flex-direction:column;gap:4px;font-size:14px;overflow-wrap:anywhere}
+.health h2{font-size:17px}
+.health .colhead{margin-top:8px}
 @media (max-width:600px){.app{grid-template-columns:1fr}dl{grid-template-columns:1fr}.colheads{display:none}.box[data-col]::before{content:attr(data-col);display:block;margin-bottom:4px;font-size:11px;font-weight:700;letter-spacing:1px;color:var(--muted)}}
