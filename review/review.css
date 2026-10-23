@@ -153,4 +153,16 @@ table.cases{width:100%;min-width:760px;border-collapse:collapse;font-size:14px}
 .health{display:flex;flex-direction:column;gap:4px;font-size:14px;overflow-wrap:anywhere}
 .health h2{font-size:17px}
 .health .colhead{margin-top:8px}
+.health .banner{margin-top:8px}
+.payment{display:flex;flex-direction:column;gap:6px;padding:6px 0}
+.payment .line{display:flex;flex-wrap:wrap;align-items:center;gap:6px 12px}
+.payment .line>span{flex:1 1 260px;min-width:0}
+.mark{display:flex;flex-direction:column;gap:6px;padding:10px 12px;border-radius:12px;border:1px solid var(--line)}
+.mark label{display:flex;flex-direction:column;gap:6px;margin:0;font-size:14px;font-weight:600;color:var(--navy)}
+.mark textarea{font-weight:400}
+.mark p{margin:0}
+.mark p:empty{display:none}
+.banner.stray{overflow-wrap:anywhere}
+.banner.stray div{font-weight:700}
+.banner.stray p{margin:6px 0 0;font-weight:400}
 @media (max-width:600px){.app{grid-template-columns:1fr}dl{grid-template-columns:1fr}.colheads{display:none}.box[data-col]::before{content:attr(data-col);display:block;margin-bottom:4px;font-size:11px;font-weight:700;letter-spacing:1px;color:var(--muted)}}

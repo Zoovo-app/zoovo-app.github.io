@@ -279,27 +279,52 @@ export function isOpenCase(row) {
   return openProblems(row).length > 0 || attentionLabel(row) !== '';
 }
 
-// Whether a refund_failed case stands for a payment Stripe took on another
-// PaymentIntent than the booking's. The database lists that flag as
-// refund_failed (115's booking_money_attention), and the case row has no
-// detail of it: money_flags holds only the outside and conflicting refunds.
-// So it is the case whose row shows nothing else for refund_failed: no open
-// refund_failed problem (every failed refund opens one) and no money flag. A
-// row without money_flags can't say, so no guess is made.
-export function strayPayment(row) {
-  if (!isObject(row) || row.attention !== 'refund_failed' || !Array.isArray(row.money_flags)) return false;
-  return row.money_flags.length === 0 && !openProblems(row).some((p) => p.kind === 'refund_failed');
+const STRAY_PAYMENT = 'Payment on another PaymentIntent';
+
+// The payments Stripe took on another PaymentIntent than the booking's own, as
+// the case row lists them (stray_payments: [{log_id, payment_intent_id,
+// amount_cents, created_at}], oldest first, [] when none): [{logId,
+// paymentIntentId, cents, when, text}]. `text` is the line the card shows:
+// "Payment on another PaymentIntent: €25, pi_x, Wed 21 Oct, 10:15" (the time is
+// Amsterdam's). A part the entry lacks reads "—"; the payment is still listed,
+// because it is still there. An entry that isn't an object is skipped.
+export function strayPayments(row) {
+  const list = isObject(row) && Array.isArray(row.stray_payments) ? row.stray_payments : [];
+  return list.filter(isObject).map((p) => {
+    const paymentIntentId = trimmed(p.payment_intent_id);
+    const cents = Number.isInteger(p.amount_cents) && p.amount_cents >= 0 ? p.amount_cents : null;
+    const when = whenLabel(p.created_at);
+    return {
+      logId: Number.isSafeInteger(p.log_id) ? p.log_id : null,
+      paymentIntentId,
+      cents,
+      when,
+      text: `${STRAY_PAYMENT}: ${formatEuro(cents)}, ${paymentIntentId ?? '—'}, ${when}`,
+    };
+  });
 }
 
-// The case card's note for such a case, or null. That payment is refunded at
-// Stripe: a refund decision here refunds the booking's own PaymentIntent.
-// Acknowledging answers the flag, where the case offers it.
-export function strayPaymentNote(row) {
-  if (!strayPayment(row)) return null;
-  const then = allowedDecisions(row).includes('acknowledge') ? ', then Acknowledge' : '';
-  return 'Refund failed here means a payment Stripe took on another PaymentIntent than this booking’s own (Payment, below); '
-    + `the case doesn’t say which. Find it at Stripe and refund it there${then}. `
-    + 'A refund decision here would refund the booking’s own payment, not that one.';
+// Whether the stray payments are all that is wrong with the case: no problem is
+// open, and the server offers acknowledge and nothing else (that is what it
+// allows for a case whose only issue is stray payments).
+export function onlyStrayPayments(row) {
+  if (strayPayments(row).length === 0 || openProblems(row).length > 0) return false;
+  const served = row.allowed_decisions;
+  return Array.isArray(served) && served.length > 0 && served.every((d) => d === 'acknowledge');
+}
+
+const STRAY_REFUND_NOTE = 'Refund it in the Stripe dashboard. A refund here would hit the booking’s own payment.';
+const STRAY_DECIDING_NOTE = 'Deciding this case also clears the stray payment; refund it at Stripe first.';
+
+// The notes under the stray payments, [] when there are none. The refund is
+// made at Stripe: a refund decision here refunds the booking's own payment. A
+// decision other than acknowledge (an open problem's, or one for other money the
+// log flags) answers the money log up to what the reviewer saw, the stray
+// payment included, so that case is told to refund it first.
+export function strayPaymentNotes(row) {
+  if (strayPayments(row).length === 0) return [];
+  const decides = openProblems(row).length > 0 || allowedDecisions(row).some((d) => d !== 'acknowledge');
+  return decides ? [STRAY_REFUND_NOTE, STRAY_DECIDING_NOTE] : [STRAY_REFUND_NOTE];
 }
 
 const DECISIONS = ['full_refund', 'partial_refund', 'release', 'withhold', 'acknowledge'];
@@ -577,18 +602,16 @@ function reporterOf(problem, row) {
   return { who: 'Zoovo', role: 'opened automatically' };
 }
 
-const STRAY_PAYMENT = 'Payment on another PaymentIntent';
-
 // The list's "reported by" and "reason" cells, one entry per open problem. A
 // case that is only here because money failed has no problem to name: the
-// system is the reporter, and the reason is the attention (a payment on
-// another PaymentIntent by that name). Once every problem is resolved (the
+// system is the reporter, and the reason is the attention (a case whose only
+// issue is stray payments says so, by name). Once every problem is resolved (the
 // page keeps the case on screen to show the answer) the resolved ones are
 // named instead.
 export function caseItems(row) {
   const open = openProblems(row);
   const all = isObject(row) && Array.isArray(row.problems) ? row.problems.filter(isObject) : [];
-  const failure = strayPayment(row) ? STRAY_PAYMENT : attentionLabel(row);
+  const failure = onlyStrayPayments(row) ? STRAY_PAYMENT : attentionLabel(row);
   if (open.length === 0 && (failure !== '' || all.length === 0)) {
     return [{ who: 'Zoovo', role: 'automatic check', reason: failure || 'Nothing open' }];
   }
@@ -624,16 +647,45 @@ export function refundRows(row) {
   }));
 }
 
-// The oldest moment the team has been waited for: the oldest open problem,
-// else the first failed refund (ISO string), else null.
+// When the team started being waited for: waiting_since, which
+// admin_list_problem_cases puts on each open row and sorts the list by (the
+// oldest open problem, the first money flag, a failed transfer's date, and so
+// on). It is the server's own age, so nothing is worked out here. Answers to an
+// action don't carry it, and resolved rows have null; a case nobody waits on
+// has no time. null for anything that isn't a date.
 export function waitingSince(row) {
-  const oldest = (isos) => isos
-    .map((iso) => [typeof iso === 'string' ? Date.parse(iso) : NaN, iso])
-    .filter(([time]) => Number.isFinite(time))
-    .sort((a, b) => a[0] - b[0])[0]?.[1] ?? null;
-  const refunds = isObject(row) && Array.isArray(row.refunds) ? row.refunds : [];
-  return oldest(openProblems(row).map((p) => p.created_at))
-    ?? oldest(refunds.filter((r) => isObject(r) && r.status === 'failed').map((r) => r.created_at));
+  if (!isObject(row) || !isOpenCase(row)) return null;
+  const iso = row.waiting_since;
+  return typeof iso === 'string' && Number.isFinite(Date.parse(iso)) ? iso : null;
+}
+
+// How long ago `iso` was, in the words of the review lists: "less than an
+// hour", whole hours up to two days ("37 h"), then days ("3 days").
+export function waitedFor(iso, now = Date.now()) {
+  const hours = Math.floor((now - new Date(iso).getTime()) / 36e5);
+  if (hours < 1) return 'less than an hour';
+  if (hours < 48) return `${hours} h`;
+  return `${Math.floor(hours / 24)} days`;
+}
+
+// What a case shows of its waiting time, or null when it has none: the list's
+// cell ("waiting 37 h") and the card's line ("Waiting since Thu 22 Oct, 00:30 ·
+// 37 h", the time in Amsterdam).
+export function waitingTexts(row, now = Date.now()) {
+  const since = waitingSince(row);
+  if (since === null) return null;
+  const long = waitedFor(since, now);
+  return { list: `waiting ${long}`, card: `Waiting since ${whenLabel(since)} · ${long}` };
+}
+
+// The answer to an action is a case row without waiting_since. While that case
+// is still open it keeps the time the list gave for it (the next load asks the
+// server again); a case the answer closed has none. An answer that carries the
+// key (null included) says for itself.
+export function keepWaiting(updated, previous) {
+  if (!isObject(updated) || Object.hasOwn(updated, 'waiting_since')) return updated;
+  const since = waitingSince(previous);
+  return since !== null && isOpenCase(updated) ? { ...updated, waiting_since: since } : updated;
 }
 
 // "Wed 7 Oct, 16:00" in Amsterdam time, "—" when it isn't a date.
@@ -859,7 +911,9 @@ export function retryLabel(job) {
 // their own idempotency key, so Stripe answers a call it already made and
 // can't make them twice. A transfer is sent again for the payout as it is now,
 // under a new key when that amount changed (M4-R11), so it makes no such
-// promise. `job` is an entry of failedJobs().
+// promise; and a pending payout's transfer first looks for the one an earlier
+// attempt may have made, and may be answered "reversed". `job` is an entry of
+// failedJobs().
 export function retryConfirmText(job, row) {
   const cents = jobAmount(job);
   const of = cents === null ? '' : ` of ${formatEuro(cents)}`;
@@ -868,6 +922,13 @@ export function retryConfirmText(job, row) {
     case 'refund': return `Retry the failed refund${of} to ${customerName(row)}? ${once}`;
     case 'transfer_reversal': return `Retry the failed transfer reversal${of} from ${proName(row)}? ${once}`;
     case 'transfer':
+      // A pending payout's transfer has no known outcome (the team's way out of a lookup that settled nothing): the
+      // worker lists the booking's transfers at Stripe before it creates one, adopts a live one, and fails for good on
+      // one Stripe shows reversed. "Sent again" would promise what it may not do.
+      if (bookingOf(row).transfer_status === 'pending') {
+        const sends = cents === null ? 'the payout is sent' : `${formatEuro(cents)} is sent`;
+        return `Retry the transfer${of} to ${proName(row)}? Zoovo first looks at Stripe for a transfer an earlier attempt may have made. If there is one, it is recorded and nothing more is sent. If there is none, ${sends}. If Stripe shows the transfer was reversed, nothing is sent and the job fails again.`;
+      }
       return `Retry the failed transfer to ${proName(row)}? It is sent again at the current payout amount${cents === null ? '' : `, ${formatEuro(cents)}`}.`;
     case 'transfer_lookup': return 'Retry the failed transfer lookup? It only asks Stripe whether the transfer exists; no money moves.';
     case 'cancel_intent':
@@ -1142,6 +1203,53 @@ export function paymentHealth(data) {
       when: whenLabel(e.created_at),
     })),
   };
+}
+
+// ---- Marking a payment handled -----------------------------------------------------
+
+// The arguments of admin_mark_payment_handled for `payment` (an entry of
+// paymentHealth().payments): the event, and the note trimmed. null for a payment
+// with no event id: then nothing is sent. Check the note with validateNote first.
+export function markHandledArgs(payment, note) {
+  const id = isObject(payment) ? trimmed(payment.eventId) : null;
+  if (id === null) return null;
+  return { p_event_id: id, p_note: typeof note === 'string' ? note.trim() : '' };
+}
+
+// The question before it is sent. Marking changes no money: the payment is
+// refunded (or otherwise settled) at Stripe first, and this takes it off the list.
+export function markHandledConfirmText(payment) {
+  const name = trimmed(payment?.paymentIntentId) ?? trimmed(payment?.eventId);
+  const when = typeof payment?.when === 'string' ? payment.when : '—';
+  return `Mark ${name ? `the payment ${name}` : 'this payment'} (received ${when}) as handled? `
+    + 'Do this only once you have refunded it, or otherwise settled it, at Stripe. '
+    + 'Nothing is sent to Stripe and no money moves here. It leaves this list, and your note is kept with it.';
+}
+
+// The banner after it, worked out from what the database answered ({event_id,
+// payment_intent_id, received_at, handled_at, handled_by, handled_note}), not from
+// what was sent: only an answer that names this payment and says when it was marked.
+export function markedHandledText(answer, payment) {
+  const id = isObject(payment) ? trimmed(payment.eventId) : null;
+  if (!isObject(answer) || id === null || answer.event_id !== id) return null;
+  if (typeof answer.handled_at !== 'string' || !Number.isFinite(Date.parse(answer.handled_at))) return null;
+  return `Payment ${trimmed(payment.paymentIntentId) ?? id} is marked handled (${whenLabel(answer.handled_at)}).`;
+}
+
+// A refused or failed marking in words. 42501 is a team member who isn't an
+// admin; 22023 invalid_input carries the reason in its message (the note, a
+// payment a booking holds now, one marked already), which is shown as it is. Any
+// other failure may or may not have gone through.
+export function markHandledErrorText(error) {
+  const message = trimmed(error?.message);
+  if (error?.code === '42501' || /Admins only/.test(message ?? '')) return 'Couldn’t mark it handled: this account isn’t an admin.';
+  if (error?.hint === 'invalid_input' || /invalid_input/.test(message ?? '')) {
+    const named = message ?? 'invalid_input';
+    const advice = /^The note\b/.test(named)
+      ? '' : ' Refresh the list: a booking may hold this payment now, or another reviewer may have handled it.';
+    return `Couldn’t mark it handled: the server refused it (${named}).${advice}`;
+  }
+  return `Couldn’t mark it handled: ${message ?? 'unknown error'}. Refresh the list to see whether it went through.`;
 }
 
 // ---- One request per case ------------------------------------------------------

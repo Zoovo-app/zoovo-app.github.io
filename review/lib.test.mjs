@@ -14,8 +14,9 @@ import {
   transferredCents, reverseLabel, notifiedText, decisionButtonLabel, moneyFlags,
   recordRefundConfirmText, recordedText, requeueableRefunds, canRequeue, requeueConfirmText,
   requeuedText, seenLogId, decisionNoticeText, canCheckTransfer, checkTransferConfirmText,
-  stripeRefundStatusLabel, decisionArgs, CASE_CHANGED, retryLabel, paymentHealth, strayPayment,
-  strayPaymentNote,
+  stripeRefundStatusLabel, decisionArgs, CASE_CHANGED, retryLabel, paymentHealth, strayPayments,
+  strayPaymentNotes, onlyStrayPayments, waitedFor, waitingTexts, keepWaiting, markHandledArgs,
+  markHandledConfirmText, markedHandledText, markHandledErrorText,
 } from './lib.js';
 
 // verification as admin_list_pro_applications and admin_list_pros return it:
@@ -582,15 +583,69 @@ test('case_items_for_the_list', () => {
 });
 
 test('waiting_since', () => {
+  // The server's own sort key (admin_list_problem_cases: waiting_since), whatever the problems say.
   const older = { ...wentWrong, id: 'o', created_at: '2026-10-05T09:00:00Z' };
-  assert.equal(waitingSince(caseRow({ problems: [wentWrong, older, { ...wentWrong, status: 'resolved', created_at: '2026-01-01T00:00:00Z' }] })), '2026-10-05T09:00:00Z');
-  assert.equal(waitingSince(caseRow({ problems: [{ ...wentWrong, created_at: 'nope' }] })), null);
-  // No open problem: the first failed refund.
+  assert.equal(waitingSince(caseRow({ problems: [wentWrong, older], waiting_since: '2026-10-04T07:15:00Z' })), '2026-10-04T07:15:00Z');
+  // A case with no open problem has one too: a failed transfer, a payout mismatch, a stray payment.
+  for (const attention of ['transfer_failed', 'payout_mismatch', 'refund_failed']) {
+    assert.equal(waitingSince(caseRow({ problems: [], attention, waiting_since: '2026-10-20T07:30:00Z' })), '2026-10-20T07:30:00Z', attention);
+  }
+  // Nothing is worked out any more: a row without the key (an action's answer) or with null (a resolved row) has no time,
+  // even when it has open problems or failed refunds whose dates could be used.
+  assert.equal(waitingSince(caseRow({ problems: [wentWrong, older] })), null);
+  assert.equal(waitingSince(caseRow({ problems: [wentWrong], waiting_since: null })), null);
   assert.equal(waitingSince(caseRow({
-    problems: [], refunds: [{ status: 'succeeded', created_at: '2026-10-01T00:00:00Z' }, { status: 'failed', created_at: '2026-10-02T08:00:00Z' }],
-  })), '2026-10-02T08:00:00Z');
-  assert.equal(waitingSince(caseRow({ problems: [] })), null);
+    problems: [], attention: 'refund_failed', refunds: [{ status: 'failed', created_at: '2026-10-02T08:00:00Z' }],
+  })), null);
+  // No time on a case nobody waits on, even if the value is still there.
+  const closed = caseRow({ problems: [{ ...wentWrong, status: 'resolved', resolution: 'release' }], attention: null, waiting_since: '2026-10-04T07:15:00Z' });
+  assert.equal(waitingSince(closed), null);
+  // Only a date is a time.
+  for (const bad of ['nope', '', 5, {}, [], true, '<b>2026-10-04</b>']) assert.equal(waitingSince(caseRow({ waiting_since: bad })), null, String(bad));
   assert.equal(waitingSince(null), null);
+  assert.equal(waitingSince('x'), null);
+});
+
+test('waiting_texts', () => {
+  const now = Date.parse('2026-10-23T12:00:00Z');
+  // The card gives the day and time in Amsterdam, the list only how long. 22:30 UTC is already the next day there.
+  assert.deepEqual(waitingTexts(caseRow({ waiting_since: '2026-10-21T22:30:00Z' }), now),
+    { list: 'waiting 37 h', card: 'Waiting since Thu 22 Oct, 00:30 · 37 h' });
+  assert.deepEqual(waitingTexts(caseRow({ problems: [], attention: 'transfer_failed', waiting_since: '2026-10-20T09:00:00Z' }), now),
+    { list: 'waiting 3 days', card: 'Waiting since Tue 20 Oct, 11:00 · 3 days' });
+  assert.deepEqual(waitingTexts(caseRow({ waiting_since: '2026-10-23T11:30:00Z' }), now),
+    { list: 'waiting less than an hour', card: 'Waiting since Fri 23 Oct, 13:30 · less than an hour' });
+  // After the clocks go back (25 Oct) Amsterdam is one hour ahead of UTC, not two.
+  assert.equal(waitingTexts(caseRow({ waiting_since: '2026-10-25T23:30:00Z' }), Date.parse('2026-10-26T12:00:00Z')).card,
+    'Waiting since Mon 26 Oct, 00:30 · 12 h');
+  // A time that is a little ahead (clocks differ) is not a negative wait.
+  assert.equal(waitingTexts(caseRow({ waiting_since: '2026-10-23T12:05:00Z' }), now).list, 'waiting less than an hour');
+  // Resolved rows, rows without a time and rows that aren't cases show nothing.
+  assert.equal(waitingTexts(caseRow({ problems: [], attention: null, waiting_since: null }), now), null);
+  assert.equal(waitingTexts(caseRow(), now), null);
+  assert.equal(waitingTexts(null, now), null);
+  // The wording the other tabs use: whole hours up to two days, then days.
+  const at = (hours) => waitedFor(new Date(now - hours * 36e5).toISOString(), now);
+  assert.deepEqual([0, 0.99, 1, 47.9, 48, 49, 120].map(at), ['less than an hour', 'less than an hour', '1 h', '47 h', '2 days', '2 days', '5 days']);
+});
+
+test('answers_keep_the_waiting_time_while_the_case_is_open', () => {
+  // An action's answer is a case row without waiting_since; the list's value for that case is kept while it is still open.
+  const listed = caseRow({ waiting_since: '2026-10-05T09:00:00Z' });
+  const answered = caseRow();
+  const kept = keepWaiting(answered, listed);
+  assert.equal(kept.waiting_since, '2026-10-05T09:00:00Z');
+  assert.equal(Object.hasOwn(answered, 'waiting_since'), false); // the answer itself is not changed
+  // A case the answer closed has no time to keep.
+  const closed = caseRow({ problems: [{ ...wentWrong, status: 'resolved', resolution: 'release' }], attention: null });
+  assert.equal(Object.hasOwn(keepWaiting(closed, listed), 'waiting_since'), false);
+  // An answer that does say (null included), or a list row with no usable time, is left as it is.
+  assert.equal(keepWaiting({ ...answered, waiting_since: null }, listed).waiting_since, null);
+  assert.equal(keepWaiting({ ...answered, waiting_since: '2026-10-06T09:00:00Z' }, listed).waiting_since, '2026-10-06T09:00:00Z');
+  assert.equal(keepWaiting(answered, caseRow()), answered);
+  assert.equal(keepWaiting(answered, caseRow({ waiting_since: 'nope' })), answered);
+  assert.equal(keepWaiting(answered, null), answered);
+  assert.equal(keepWaiting(null, listed), null);
 });
 
 test('when_labels', () => {
@@ -1312,31 +1367,172 @@ test('payment_health', () => {
   for (const bad of [null, undefined, [], 'x', 7]) assert.equal(paymentHealth(bad), null, String(bad));
 });
 
-test('payment_on_another_intent', () => {
-  // refund_failed with no open refund_failed problem and no money flag: the one flag the case row doesn't detail.
-  const stray = caseRow({ problems: [], attention: 'refund_failed', money_flags: [], allowed_decisions: ['full_refund', 'partial_refund', 'release', 'acknowledge'] });
-  assert.equal(strayPayment(stray), true);
-  assert.deepEqual(caseItems(stray), [{ who: 'Zoovo', role: 'automatic check', reason: 'Payment on another PaymentIntent' }]);
-  // A resolved problem from before doesn't explain a flag that is open now.
-  assert.equal(strayPayment({ ...stray, problems: [{ ...wentWrong, status: 'resolved', resolution: 'release' }] }), true);
-  // Anything the row does show explains the flag, and then it is not called a payment on another PaymentIntent.
-  const refundFailed = { ...wentWrong, kind: 'refund_failed', reporter_role: null };
-  assert.equal(strayPayment({ ...stray, problems: [refundFailed] }), false);
-  assert.equal(strayPayment({ ...stray, money_flags: [{ log_id: 3, event: 'refund_external', stripe_refund_id: 're_1' }] }), false);
-  assert.equal(caseItems({ ...stray, problems: [refundFailed] })[0].reason, 'Refund failed');
-  // Other attention, a row without money_flags (it can't say), or no row: no guess.
-  for (const attention of ['transfer_failed', 'payout_mismatch', 'problem', null]) assert.equal(strayPayment({ ...stray, attention }), false, String(attention));
-  const { money_flags: _flags, ...noFlags } = stray;
-  assert.equal(strayPayment(noFlags), false);
-  assert.equal(caseItems(noFlags)[0].reason, 'Refund failed');
-  assert.equal(strayPayment(null), false);
 
-  // The card's note: what the flag stands for, where to refund, and why not here.
-  assert.equal(strayPaymentNote(stray),
-    'Refund failed here means a payment Stripe took on another PaymentIntent than this booking’s own (Payment, below); the case doesn’t say which. Find it at Stripe and refund it there, then Acknowledge. A refund decision here would refund the booking’s own payment, not that one.');
-  // Acknowledge is named only when the case offers it (an open report rules it out).
-  assert.equal(strayPaymentNote({ ...stray, problems: [wentWrong], allowed_decisions: ['full_refund', 'partial_refund', 'release'] }),
-    'Refund failed here means a payment Stripe took on another PaymentIntent than this booking’s own (Payment, below); the case doesn’t say which. Find it at Stripe and refund it there. A refund decision here would refund the booking’s own payment, not that one.');
-  assert.equal(strayPaymentNote({ ...stray, problems: [refundFailed] }), null);
-  assert.equal(strayPaymentNote(null), null);
+// ---------------------------------------------------------------------------
+// Follow-up: stray payments from the case row, the server's waiting time, marking
+// a payment handled, and a pending payout's retry
+// ---------------------------------------------------------------------------
+
+// stray_payments[] as booking_case_json lists it.
+const strayEntry = (over = {}) => ({
+  log_id: 31, payment_intent_id: 'pi_fr_stray_1', amount_cents: 2500, created_at: '2026-10-21T08:15:00Z', ...over,
+});
+// A case whose only issue is a payment on another PaymentIntent: the server offers acknowledge and nothing else.
+const strayOnly = (over = {}) => caseRow({
+  problems: [], attention: 'refund_failed', money_flags: [], allowed_decisions: ['acknowledge'],
+  stray_payments: [strayEntry()], ...over,
+});
+const FIRST_NOTE = 'Refund it in the Stripe dashboard. A refund here would hit the booking’s own payment.';
+const DECIDING_NOTE = 'Deciding this case also clears the stray payment; refund it at Stripe first.';
+
+test('stray_payments_come_from_the_case_row', () => {
+  const row = strayOnly({
+    stray_payments: [strayEntry(), strayEntry({ log_id: 35, payment_intent_id: ' pi_fr_stray_2 ', amount_cents: 1250, created_at: '2026-10-22T22:30:00Z' })],
+  });
+  // One line each, oldest first as the server lists them: amount, PaymentIntent, when (Amsterdam).
+  assert.deepEqual(strayPayments(row).map((p) => p.text), [
+    'Payment on another PaymentIntent: €25, pi_fr_stray_1, Wed 21 Oct, 10:15',
+    'Payment on another PaymentIntent: €12.50, pi_fr_stray_2, Fri 23 Oct, 00:30',
+  ]);
+  assert.deepEqual(strayPayments(strayOnly())[0], {
+    logId: 31, paymentIntentId: 'pi_fr_stray_1', cents: 2500, when: 'Wed 21 Oct, 10:15',
+    text: 'Payment on another PaymentIntent: €25, pi_fr_stray_1, Wed 21 Oct, 10:15',
+  });
+  // A part the row lacks or gets wrong reads "—"; the payment is still listed, because it is still there.
+  assert.equal(strayPayments(strayOnly({ stray_payments: [{}] }))[0].text, 'Payment on another PaymentIntent: —, —, —');
+  assert.equal(strayPayments(strayOnly({ stray_payments: [strayEntry({ amount_cents: '2500', created_at: 'nope', payment_intent_id: 7 })] }))[0].text,
+    'Payment on another PaymentIntent: —, —, —');
+  // Entries that aren't objects are skipped. [] (none), a missing key, or something else is no stray payment.
+  assert.equal(strayPayments(strayOnly({ stray_payments: [null, 'x', 4, [], strayEntry()] })).length, 1);
+  for (const none of [[], undefined, null, 'pi_x', {}, 3]) assert.deepEqual(strayPayments(strayOnly({ stray_payments: none })), [], String(none));
+  assert.deepEqual(strayPayments(null), []);
+  // Ids and times come from the database: they stay text. Nothing here turns them into markup or cuts them.
+  const hostile = '<img src=x onerror=alert(1)>&amp;"\'';
+  assert.equal(strayPayments(strayOnly({ stray_payments: [strayEntry({ payment_intent_id: hostile })] }))[0].text,
+    `Payment on another PaymentIntent: €25, ${hostile}, Wed 21 Oct, 10:15`);
+});
+
+test('stray_payment_notes', () => {
+  // The case's only issue: where to refund it, and why not here.
+  assert.deepEqual(strayPaymentNotes(strayOnly()), [FIRST_NOTE]);
+  // Next to an open problem, the problem's decision answers the stray payment too.
+  const withProblem = caseRow({ stray_payments: [strayEntry()], allowed_decisions: ['full_refund', 'partial_refund', 'release'] });
+  assert.deepEqual(strayPaymentNotes(withProblem), [FIRST_NOTE, DECIDING_NOTE]);
+  // So does any decision of a case with no problem open but other money flagged: every decision answers the money log up to what was seen.
+  const flagged = strayOnly({
+    money_flags: [{ log_id: 3, event: 'refund_external', stripe_refund_id: 're_1', recordable: true }],
+    allowed_decisions: ['full_refund', 'partial_refund', 'release', 'acknowledge'],
+  });
+  assert.deepEqual(strayPaymentNotes(flagged), [FIRST_NOTE, DECIDING_NOTE]);
+  // A row from a database that doesn't send allowed_decisions still has its open problem.
+  const { allowed_decisions: _gone, ...older } = withProblem;
+  assert.deepEqual(strayPaymentNotes(older), [FIRST_NOTE, DECIDING_NOTE]);
+  // No stray payment, no note.
+  assert.deepEqual(strayPaymentNotes(caseRow()), []);
+  assert.deepEqual(strayPaymentNotes(strayOnly({ stray_payments: [] })), []);
+  assert.deepEqual(strayPaymentNotes(null), []);
+});
+
+test('stray_payment_cases_are_named_from_the_case_row', () => {
+  // Only stray payments, nothing to decide: the list's reason says so (not "Refund failed", which stays the Attention).
+  assert.equal(onlyStrayPayments(strayOnly()), true);
+  assert.deepEqual(caseItems(strayOnly()), [{ who: 'Zoovo', role: 'automatic check', reason: 'Payment on another PaymentIntent' }]);
+  assert.equal(attentionLabel(strayOnly()), 'Refund failed');
+  assert.equal(isOpenCase(strayOnly()), true);
+  // Anything else on the case is named as before.
+  const refundFailed = { ...wentWrong, kind: 'refund_failed', reporter_role: null };
+  const withProblem = caseRow({ stray_payments: [strayEntry()], allowed_decisions: NORMAL });
+  assert.equal(onlyStrayPayments(withProblem), false);
+  assert.deepEqual(caseItems(withProblem), [{ who: 'Daan Visser', role: 'pet parent', reason: 'Something went wrong' }]);
+  assert.equal(caseItems(strayOnly({ problems: [refundFailed], allowed_decisions: NORMAL }))[0].reason, 'Refund failed');
+  const flagged = strayOnly({ allowed_decisions: ['release', 'acknowledge'], money_flags: [{ log_id: 3, event: 'refund_external', stripe_refund_id: 're_1' }] });
+  assert.equal(onlyStrayPayments(flagged), false);
+  assert.equal(caseItems(flagged)[0].reason, 'Refund failed');
+  // A resolved problem from before doesn't hide it.
+  assert.equal(onlyStrayPayments(strayOnly({ problems: [{ ...wentWrong, status: 'resolved', resolution: 'release' }] })), true);
+  // Nothing is guessed from the other keys any more: without stray_payments a refund_failed case is just that.
+  const guess = caseRow({ problems: [], attention: 'refund_failed', money_flags: [], allowed_decisions: ['acknowledge'] });
+  assert.equal(onlyStrayPayments(guess), false);
+  assert.equal(caseItems(guess)[0].reason, 'Refund failed');
+  // acknowledge-only for another reason (a payout mismatch) is not a stray payment.
+  assert.equal(onlyStrayPayments(caseRow({ problems: [], attention: 'payout_mismatch', allowed_decisions: ['acknowledge'] })), false);
+  assert.equal(onlyStrayPayments(strayOnly({ allowed_decisions: [] })), false); // nothing can be done: the answer after acknowledging
+  assert.equal(onlyStrayPayments(null), false);
+});
+
+test('mark_payment_handled', () => {
+  const health = paymentHealth({
+    unplaced_payments: [
+      { event_id: 'evt_2', payment_intent_id: 'pi_stray', received_at: '2026-10-21T08:00:00Z' },
+      { event_id: 'evt_1', payment_intent_id: null, received_at: null },
+    ],
+  });
+  const [payment, noIntent] = health.payments;
+  // Exactly the RPC's two parameters: the event, and the trimmed note.
+  assert.deepEqual(markHandledArgs(payment, `  ${NOTE}\n`), { p_event_id: 'evt_2', p_note: NOTE });
+  assert.deepEqual(markHandledArgs(noIntent, NOTE), { p_event_id: 'evt_1', p_note: NOTE });
+  for (const bad of [null, undefined, {}, { eventId: '' }, { eventId: 7 }]) assert.equal(markHandledArgs(bad, NOTE), null, String(bad));
+  assert.equal(markHandledArgs(payment, null).p_note, '');
+
+  // The question names the payment and says what the action is for: refunded at Stripe first, nothing moves here.
+  assert.equal(markHandledConfirmText(payment),
+    'Mark the payment pi_stray (received Wed 21 Oct, 10:00) as handled? Do this only once you have refunded it, or otherwise settled it, at Stripe. Nothing is sent to Stripe and no money moves here. It leaves this list, and your note is kept with it.');
+  // Without a PaymentIntent id the event id names it.
+  assert.match(markHandledConfirmText(noIntent), /^Mark the payment evt_1 \(received —\) as handled\?/);
+  assert.match(markHandledConfirmText(null), /^Mark this payment \(received —\) as handled\?/);
+
+  // The banner after it: only for the answer that names this payment and says when it was marked.
+  const answer = {
+    event_id: 'evt_2', payment_intent_id: 'pi_stray', received_at: '2026-10-21T08:00:00Z',
+    handled_at: '2026-10-23T12:02:00Z', handled_by: 'u1', handled_note: NOTE,
+  };
+  assert.equal(markedHandledText(answer, payment), 'Payment pi_stray is marked handled (Fri 23 Oct, 14:02).');
+  assert.equal(markedHandledText({ ...answer, event_id: 'evt_9' }, payment), null);
+  assert.equal(markedHandledText({ ...answer, handled_at: null }, payment), null);
+  assert.equal(markedHandledText({ ...answer, handled_at: 'nope' }, payment), null);
+  for (const bad of [null, undefined, [], 'x', 4, {}]) assert.equal(markedHandledText(bad, payment), null, String(bad));
+  assert.equal(markedHandledText(answer, null), null);
+
+  // The refusals, in words: not an admin; the server's own reason (the note, a payment a booking holds, one handled already); anything else.
+  assert.equal(markHandledErrorText({ code: '42501', message: 'Admins only' }), 'Couldn’t mark it handled: this account isn’t an admin.');
+  assert.equal(markHandledErrorText({ message: 'Admins only' }), 'Couldn’t mark it handled: this account isn’t an admin.');
+  assert.equal(markHandledErrorText({ code: '22023', hint: 'invalid_input', message: 'Payment pi_stray was marked handled already' }),
+    'Couldn’t mark it handled: the server refused it (Payment pi_stray was marked handled already). Refresh the list: a booking may hold this payment now, or another reviewer may have handled it.');
+  assert.equal(markHandledErrorText({ code: '22023', hint: 'invalid_input', message: 'No payment evt_2 that no booking holds' }),
+    'Couldn’t mark it handled: the server refused it (No payment evt_2 that no booking holds). Refresh the list: a booking may hold this payment now, or another reviewer may have handled it.');
+  assert.equal(markHandledErrorText({ code: '22023', hint: 'invalid_input', message: 'The note is 5 to 1000 characters' }),
+    'Couldn’t mark it handled: the server refused it (The note is 5 to 1000 characters).');
+  assert.match(markHandledErrorText({ hint: 'invalid_input' }), /^Couldn’t mark it handled: the server refused it \(invalid_input\)\./);
+  assert.equal(markHandledErrorText({ message: 'network error' }), 'Couldn’t mark it handled: network error. Refresh the list to see whether it went through.');
+  assert.equal(markHandledErrorText(null), 'Couldn’t mark it handled: unknown error. Refresh the list to see whether it went through.');
+});
+
+test('a_pending_payouts_retry_says_it_looks_first', () => {
+  // The new way out (failed_jobs[].retryable on a pending payout whose lookup settled nothing): the page offers exactly what is retryable.
+  const pending = (job) => caseRow({
+    problems: [], attention: 'transfer_failed', failed_jobs: [job],
+  }, { transfer_status: 'pending', payout_cents: 1760 });
+  const retryable = { id: 't1', kind: 'transfer', amount_cents: 1760, last_error: 'timeout', retryable: true, retry_refusal: null };
+  const row = pending(retryable);
+  const [job] = failedJobs(row);
+  assert.equal(job.retryable, true);
+  assert.equal(job.cents, 1760);
+  assert.equal(retryLabel(job), 'Retry the transfer · €17.60');
+  // The wording of a failed payout ("it is sent again") would be wrong here: the worker looks at Stripe first, and Stripe may say reversed.
+  assert.equal(retryConfirmText(job, row),
+    'Retry the transfer of €17.60 to Happy Paws Walking? Zoovo first looks at Stripe for a transfer an earlier attempt may have made. If there is one, it is recorded and nothing more is sent. If there is none, €17.60 is sent. If Stripe shows the transfer was reversed, nothing is sent and the job fails again.');
+  assert.doesNotMatch(retryConfirmText(job, row), /same key|sent again/);
+  // Without an amount in the row none is named.
+  assert.match(retryConfirmText({ ...job, cents: null }, row), /^Retry the transfer to Happy Paws Walking\? .* If there is none, the payout is sent\. /);
+  assert.match(retryConfirmText(job, caseRow({ pro: null }, { transfer_status: 'pending' })), /^Retry the transfer of €17\.60 to the pro\? /);
+  // A payout that failed keeps its own wording: known outcome, sent again at the payout now.
+  const failed = caseRow({ problems: [], attention: 'transfer_failed' }, { transfer_status: 'failed' });
+  assert.equal(retryConfirmText(job, failed), 'Retry the failed transfer to Happy Paws Walking? It is sent again at the current payout amount, €17.60.');
+  // A pending payout's other jobs keep theirs.
+  assert.equal(retryConfirmText({ id: 'l', kind: 'transfer_lookup', label: 'transfer lookup', cents: null }, row),
+    'Retry the failed transfer lookup? It only asks Stripe whether the transfer exists; no money moves.');
+  // The server's refusal is still a no, with its reason.
+  const refused = failedJobs(pending({ ...retryable, retryable: false, retry_refusal: 'The payout is pending, not being paid' }))[0];
+  assert.equal(refused.retryable, false);
+  assert.equal(refused.refusal, 'The payout is pending, not being paid');
 });

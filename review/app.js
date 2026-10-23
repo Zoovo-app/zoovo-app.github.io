@@ -3,13 +3,14 @@ import {
   CASE_CHANGED, PRO_SORTS, allowedDecisions, asCaseRow, attentionLabel, bookingWhen, canCheckTransfer,
   canRequeue, cancelRate, cancellationRows, cancellationText, caseItems, centsToInput, chatLines,
   checkTransferConfirmText, confirmText, createRequestTracker, decisionArgs, decisionButtonLabel,
-  decisionNoticeText, decisionPreview, durationLabel, failedJobs, formatEuro, isOpenCase, kvkUrl,
+  decisionNoticeText, decisionPreview, durationLabel, failedJobs, formatEuro, isOpenCase, keepWaiting,
+  kvkUrl, markHandledArgs, markHandledConfirmText, markHandledErrorText, markedHandledText,
   methodLabel, moneyFlags, openProblems, parseEuroToCents, paymentHealth, paymentStatusLabel,
   problemDetails, proSubline, reasonCounts, recordRefundConfirmText, recordedText, refundRows,
   refundableCents, requeueConfirmText, requeueableRefunds, requeuedText, retryConfirmText, retryLabel,
-  reverseConfirmText, reverseLabel, saveErrorText, savedText, sortPros, stateText, strayPaymentNote,
-  stripeTypeNote, suggestedRefund, transferLabel, validateDecision, validateNote, verificationBadges,
-  waitingSince, whenLabel,
+  reverseConfirmText, reverseLabel, saveErrorText, savedText, sortPros, stateText, strayPaymentNotes,
+  strayPayments, stripeTypeNote, suggestedRefund, transferLabel, validateDecision, validateNote,
+  verificationBadges, waitedFor, waitingTexts, whenLabel,
 } from '/review/lib.js';
 
 // Applicants choose their avatar URL (the database only checks for https), so
@@ -301,6 +302,13 @@ const CHAT_LIMIT = 100;
 // with each load of the tab: {status: 'loading'|'ok'|'error'|'missing', health, message}.
 let health = null;
 const HEALTH_LIMIT = 20;
+// Marking a payment handled (admin_mark_payment_handled), per event id: what the reviewer has typed and how it
+// stands, {open, note, error, focus}, kept across the redraws of the Payment health card. Its request is tracked
+// by `requests` (so none is sent twice, and an answer after sign-out is ignored); payPainters redraw a row.
+const handling = new Map();
+const payPainters = new Map(); // event id -> redraws that payment's row on screen
+// The outcome of the last marking, at the top of the Payment health card until the tab is loaded again.
+let healthNotice = null;
 // A message above the list that must survive the reload an action triggers.
 let problemNotice = null;
 let keepNotice = false;
@@ -327,12 +335,7 @@ function el(tag, props = {}, ...children) {
   return node;
 }
 
-function waited(iso) {
-  const hours = Math.floor((Date.now() - new Date(iso).getTime()) / 36e5);
-  if (hours < 1) return 'less than an hour';
-  if (hours < 48) return `${hours} h`;
-  return `${Math.floor(hours / 24)} days`;
-}
+const waited = (iso) => waitedFor(iso, Date.now());
 
 async function route() {
   const { data: { session } } = await sb.auth.getSession();
@@ -356,6 +359,7 @@ async function load() {
   prosLoaded = false;
   if (!keepNotice) problemNotice = null;
   keepNotice = false;
+  healthNotice = null;
   savedCases.clear();
   renderTabs();
   renderFilters();
@@ -443,7 +447,7 @@ async function loadProblems(seq) {
     const late = overlays.get(caseId(r));
     if (!late || late.seq !== seq) return r;
     savedCases.set(caseId(r), late.meta);
-    return late.row;
+    return keepWaiting(late.row, r); // the answer has no waiting_since; this list's row has
   });
   overlays.clear();
   for (const id of [...drafts.keys()]) if (!rows.some((r) => caseId(r) === id)) drafts.delete(id); // cases that are gone
@@ -468,7 +472,9 @@ async function loadHealth(seq) {
     : error ? { status: 'error', message: error.message }
       : parsed ? { status: 'ok', health: parsed }
         : { status: 'error', message: 'the answer isn’t a payment health list' };
-  $('list').querySelector('section.health')?.replaceWith(healthCard()); // once the cases are drawn
+  // What was typed for a payment that is no longer listed (handled, or a booking holds it now) is dropped.
+  if (parsed) for (const id of [...handling.keys()]) if (!requests.isBusy(id) && !parsed.payments.some((p) => p.eventId === id)) handling.delete(id);
+  repaintHealth(); // once the cases are drawn
 }
 
 // The counts on the tabs. Each answer is dropped if a newer load() has started
@@ -949,6 +955,7 @@ function renderProblems(capped, keepCard = false) {
 // The Payment health section: the payments Stripe took that no booking holds,
 // and the scheduled jobs' errors, newest first. Ids and errors are shown as text.
 function healthCard() {
+  payPainters.clear(); // the rows below are drawn afresh
   const body = [];
   if (!health || health.status === 'loading') body.push(none('Loading…'));
   else if (health.status === 'missing') {
@@ -962,9 +969,8 @@ function healthCard() {
     }
     if (payments.length) {
       body.push(el('span', { className: 'colhead', textContent: 'PAYMENTS NO BOOKING HOLDS' }),
-        none('Stripe took these payments, but no booking records them. Refund them at Stripe.'),
-        ...payments.map((p) => el('span', {}, el('span', { className: 'ids', textContent: p.paymentIntentId ?? p.eventId }),
-          ` · received ${p.when}`)));
+        none('Stripe took these payments, but no booking records them. Refund them at Stripe, then mark each one handled, with a note, to take it off this list.'),
+        ...payments.map(paymentRow));
     }
     if (errors.length) {
       body.push(el('span', { className: 'colhead', textContent: 'JOB ERRORS' }),
@@ -974,7 +980,95 @@ function healthCard() {
     }
     if (payments.length >= HEALTH_LIMIT || errors.length >= HEALTH_LIMIT) body.push(none(`The latest ${HEALTH_LIMIT} of each are shown.`));
   }
-  return el('section', { className: 'card health' }, el('h2', { textContent: 'Payment health' }), ...body);
+  return el('section', { className: 'card health' }, el('h2', { textContent: 'Payment health' }),
+    healthNotice ? notice(healthNotice.kind, healthNotice.text) : null, ...body);
+}
+
+// Draws the card again, if it is on screen.
+function repaintHealth() {
+  $('list').querySelector('section.health')?.replaceWith(healthCard());
+}
+
+// One unplaced payment: its PaymentIntent and when it arrived, and "Mark handled". That opens a note (5 to 1000
+// characters, as every note here), asks to confirm, and sends admin_mark_payment_handled once; a refusal is shown
+// by the note and the typed words stay. When the database has answered, the list is loaded again.
+function paymentRow(p) {
+  const holder = el('div', { className: 'payment' });
+  const paint = () => holder.replaceChildren(...paymentParts(p, paint));
+  payPainters.set(p.eventId, paint);
+  paint();
+  return holder;
+}
+
+function paymentParts(p, paint) {
+  const id = p.eventId;
+  const name = p.paymentIntentId ?? id;
+  const state = handling.get(id) ?? {};
+  const line = el('div', { className: 'line' },
+    el('span', {}, el('span', { className: 'ids', textContent: name }), ` · received ${p.when}`));
+  if (!state.open) {
+    const open = el('button', { type: 'button', className: 'chip small', textContent: 'Mark handled' });
+    // The label starts with the visible words, so voice control can say them.
+    open.setAttribute('aria-label', `Mark handled: payment ${name}`);
+    open.onclick = () => { handling.set(id, { open: true, note: state.note ?? '', focus: true }); paint(); };
+    line.append(open);
+    return [line];
+  }
+
+  const busy = requests.isBusy(id);
+  const note = el('textarea', { rows: 2, maxLength: 1000, disabled: busy, value: state.note ?? '' });
+  note.setAttribute('aria-label', `Note for payment ${name} (required, saved with the action)`);
+  const error = el('p', { className: 'error', textContent: state.error ?? '' });
+  error.setAttribute('role', 'alert');
+  const status = el('p', { className: 'muted', textContent: busy ? 'Saving… please wait. Don’t close this page.' : '' });
+  status.setAttribute('role', 'status');
+  note.oninput = () => { handling.set(id, { ...handling.get(id), note: note.value, error: '' }); error.textContent = ''; };
+
+  const mark = el('button', { type: 'button', className: 'btn navy', textContent: 'Mark handled', disabled: busy });
+  const cancel = el('button', { type: 'button', className: 'chip small', textContent: 'Cancel', disabled: busy });
+  cancel.onclick = () => { handling.delete(id); paint(); };
+  mark.onclick = () => markHandled(p, note.value);
+
+  if (state.focus) {
+    handling.set(id, { ...state, focus: false });
+    queueMicrotask(() => note.focus()); // once the row is on screen
+  }
+  return [line, el('div', { className: 'mark' },
+    el('label', {}, 'Note (required, saved with the action)', note),
+    el('span', { className: 'muted', textContent: 'Say how it was settled at Stripe, for example the refund’s id.' }),
+    el('div', { className: 'row center' }, mark, cancel),
+    error, status)];
+}
+
+async function markHandled(p, noteText) {
+  const id = p.eventId;
+  const show = (part) => { handling.set(id, { open: true, note: noteText, ...part }); payPainters.get(id)?.(); };
+  if (requests.isBusy(id)) return;
+  const problem = validateNote(noteText);
+  if (problem) return show({ error: problem, focus: true });
+  if (!confirm(markHandledConfirmText(p))) return;
+  const args = markHandledArgs(p, noteText);
+  if (!args) return show({ error: 'Couldn’t mark it handled: this payment has no id.' });
+  const token = requests.start(id);
+  if (token === null) return; // a request for this payment is already on its way
+  show({}); // locks the note and the buttons while it is on its way
+  let result;
+  try {
+    result = await sb.rpc('admin_mark_payment_handled', args);
+  } catch (e) {
+    result = { data: null, error: { message: e?.message ?? 'network error' } };
+  }
+  if (!requests.finish(id, token)) return; // the reviewer signed out meanwhile
+  const { data, error } = result;
+  if (error) return show({ error: markHandledErrorText(error), focus: true });
+  handling.delete(id);
+  // Believed only from the answer: it must name this payment and say when it was marked.
+  const said = markedHandledText(data, p);
+  healthNotice = said ? { kind: 'ok', text: said }
+    : { kind: 'warn', text: 'The server answered, but not with the payment that was sent. The list was reloaded; check it before you do anything else.' };
+  if (activeTab !== 'problems') return;
+  loadHealth(loadSeq); // the marked payment is off the list when it comes back
+  repaintHealth(); // the notice, and "Loading…" in place of the list until then
 }
 
 function casesTable() {
@@ -990,7 +1084,7 @@ function caseTableRow(row) {
   const b = row.booking ?? {};
   const items = caseItems(row);
   const selected = id !== null && id === selectedCase;
-  const since = waitingSince(row);
+  const waiting = waitingTexts(row);
   // A case the database answered for, with nothing left open: a decision is
   // resolved; a reversal or a retry is only queued, the worker still has to do it.
   const saved = savedCases.get(id);
@@ -1019,7 +1113,7 @@ function caseTableRow(row) {
     el('td', { className: 'num', textContent: formatEuro(b.price_cents) }),
     el('td', {},
       el('div', { className: need, textContent: attention }),
-      since ? el('span', { className: 'muted wait', textContent: `waiting ${waited(since)}` }) : null));
+      waiting ? el('span', { className: 'muted wait', textContent: waiting.list }) : null));
 }
 
 const pane = (title, ...lines) => el('div', { className: 'pane' },
@@ -1027,12 +1121,23 @@ const pane = (title, ...lines) => el('div', { className: 'pane' },
   ...lines.filter((l) => l !== null && l !== undefined && l !== false)
     .map((l) => (typeof l === 'string' ? el('span', { textContent: l }) : l)));
 
+// The payments on another PaymentIntent that the case row lists (stray_payments), one line each, then what to do
+// about them. Everything is text from the database or fixed words.
+function strayPaymentsBanner(row) {
+  const lines = strayPayments(row);
+  if (!lines.length) return null;
+  const node = el('div', { className: 'banner warn stray' },
+    ...lines.map((p) => el('div', { textContent: p.text })),
+    ...strayPaymentNotes(row).map((text) => el('p', { textContent: text })));
+  node.setAttribute('role', 'status');
+  return node;
+}
+
 function caseCard(row) {
   const b = row.booking ?? {};
   const id = caseId(row);
   const items = caseItems(row);
-  const open = openProblems(row);
-  const since = waitingSince(row);
+  const waiting = waitingTexts(row);
   const money = (label, value) => [el('span', { textContent: label }), el('span', { className: 'r', textContent: value })];
   const proName = row.pro?.display_name ?? 'Deleted account';
   const customerName = row.customer?.name ?? 'Deleted account';
@@ -1073,9 +1178,8 @@ function caseCard(row) {
     el('div', { className: 'case-head' },
       el('h2', { textContent: `${[...new Set(items.map((i) => i.reason))].join(', ')} · ${b.service_title ?? 'Booking'}` }),
       tags,
-      since ? el('span', { className: 'waiting', textContent: `${open.length ? 'Reported' : 'Failed'} ${whenLabel(since)} · waiting ${waited(since)}` }) : null),
-    // The case row doesn't detail this flag, so the card says what it stands for.
-    strayPaymentNote(row) ? notice('warn', strayPaymentNote(row)) : null,
+      waiting ? el('span', { className: 'waiting', textContent: waiting.card }) : null),
+    strayPaymentsBanner(row),
     savedBanner,
     el('div', { className: 'cols' },
       pane('BOOKING',
@@ -1405,7 +1509,7 @@ async function finishCaseAction(id, token, meta, { data, error }) {
       overlays.set(id, { row: updated, meta, seq: loadSeq });
       return;
     }
-    rows = rows.map((r) => (caseId(r) === id ? updated : r));
+    rows = rows.map((r) => (caseId(r) === id ? keepWaiting(updated, r) : r)); // the answer has no waiting_since
     savedCases.set(id, meta);
     counts.problems = openCount();
     renderTabs();
@@ -1879,6 +1983,9 @@ $('signout').onclick = async () => {
   caseChats.clear();
   chatPainters.clear();
   health = null;
+  handling.clear();
+  payPainters.clear();
+  healthNotice = null;
   counts = {};
   exact = new Set();
   activeTab = 'apps';
