@@ -1,6 +1,7 @@
 <!doctype html><html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="robots" content="noindex">
+<script defer src="/assets/vendor/supabase-js-2.117.3.js" integrity="sha384-BWcjm9OdFth9TbhCxZPdm+gAOUMAzQy9nmTs12ioXdCcbVnJaPMn+fMUoQCLt60R" crossorigin="anonymous"></script>
 <title>Report a bug — Zoovo</title><style>
 :root{--navy:#0D3B66;--coral:#F95738;--ink:#1c2b3a;--muted:#5b6b7b;--line:#dfe6ee}
 *{box-sizing:border-box}
@@ -133,7 +134,15 @@ form.addEventListener('submit', async (e) => {
 
   send.disabled = true;
   msg.textContent = t('sending'); msg.className = '';
-  const { data, error } = await supabaseClient().rpc('submit_bug_report', {
+  let client;
+  try {
+    client = supabaseClient();
+  } catch (err) {
+    console.error(err);
+    send.disabled = false;
+    return showError(t('failed'));
+  }
+  const { data, error } = await client.rpc('submit_bug_report', {
     p_description: description,
     p_steps: steps || null,
     p_contact_email: email || null,
