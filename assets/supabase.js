@@ -33,11 +33,25 @@ export function supabaseClient({ persistSession = false } = {}) {
   if (persistSession && window.top !== window.self) {
     throw new Error('This page does not run inside a frame.');
   }
+  if (persistSession) forgetLegacySession();
   return lib.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
     auth: {
       persistSession,
       autoRefreshToken: persistSession,
+      // No page here signs in through a link, so a crafted #access_token=…
+      // link must not sign an admin's tab in as someone else.
+      detectSessionInUrl: false,
       ...(persistSession ? { storage: window.sessionStorage } : {}),
     },
   });
+}
+
+// Sessions from before the move to sessionStorage stay in localStorage, with a
+// refresh token, until removed.
+function forgetLegacySession() {
+  try {
+    window.localStorage.removeItem('sb-bzoaterrltmuqedpikjv-auth-token');
+  } catch {
+    // Storage is blocked: there is nothing to remove.
+  }
 }

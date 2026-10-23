@@ -908,8 +908,8 @@ export function retryLabel(job) {
 
 // The question before a retry, with the amount it asks Stripe for (the case
 // row's failed_jobs[].amount_cents). A refund and a reversal run again under
-// their own idempotency key, so Stripe answers a call it already made and
-// can't make them twice. A transfer is sent again for the payout as it is now,
+// their own idempotency key, so within Stripe's 24-hour idempotency window
+// Stripe answers a call it already made and can't make them twice. A transfer is sent again for the payout as it is now,
 // under a new key when that amount changed (M4-R11), so it makes no such
 // promise; and a pending payout's transfer first looks for the one an earlier
 // attempt may have made, and may be answered "reversed". `job` is an entry of
@@ -917,7 +917,7 @@ export function retryLabel(job) {
 export function retryConfirmText(job, row) {
   const cents = jobAmount(job);
   const of = cents === null ? '' : ` of ${formatEuro(cents)}`;
-  const once = 'Stripe receives it again with the same key, so it can’t happen twice.';
+  const once = 'Stripe receives the same request again, so within 24 hours of the first attempt it can’t happen twice.';
   switch (job?.kind) {
     case 'refund': return `Retry the failed refund${of} to ${customerName(row)}? ${once}`;
     case 'transfer_reversal': return `Retry the failed transfer reversal${of} from ${proName(row)}? ${once}`;
@@ -929,7 +929,7 @@ export function retryConfirmText(job, row) {
         const sends = cents === null ? 'the payout is sent' : `${formatEuro(cents)} is sent`;
         return `Retry the transfer${of} to ${proName(row)}? Zoovo first looks at Stripe for a transfer an earlier attempt may have made. If there is one, it is recorded and nothing more is sent. If there is none, ${sends}. If Stripe shows the transfer was reversed, nothing is sent and the job fails again.`;
       }
-      return `Retry the failed transfer to ${proName(row)}? It is sent again at the current payout amount${cents === null ? '' : `, ${formatEuro(cents)}`}.`;
+      return `Retry the failed transfer to ${proName(row)}? It is sent again${cents === null ? '' : ` for ${formatEuro(cents)}`}.`;
     case 'transfer_lookup': return 'Retry the failed transfer lookup? It only asks Stripe whether the transfer exists; no money moves.';
     case 'cancel_intent':
       return 'Retry the failed payment cancellation? Stripe is asked again to cancel the payment that was never taken; no money moves.';

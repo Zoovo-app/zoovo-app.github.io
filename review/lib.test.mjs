@@ -1309,19 +1309,19 @@ test('retry_confirm_names_the_amount', () => {
   const row = caseRow();
   const text = (id) => retryConfirmText(jobs.find((j) => j.id === id), row);
   // A refund and a reversal run again under their own key: Stripe can't make them twice.
-  assert.equal(text('r'), 'Retry the failed refund of €7 to Daan Visser? Stripe receives it again with the same key, so it can’t happen twice.');
-  assert.equal(text('v'), 'Retry the failed transfer reversal of €17.60 from Happy Paws Walking? Stripe receives it again with the same key, so it can’t happen twice.');
+  assert.equal(text('r'), 'Retry the failed refund of €7 to Daan Visser? Stripe receives the same request again, so within 24 hours of the first attempt it can’t happen twice.');
+  assert.equal(text('v'), 'Retry the failed transfer reversal of €17.60 from Happy Paws Walking? Stripe receives the same request again, so within 24 hours of the first attempt it can’t happen twice.');
   // A transfer goes out at the payout as it is now (under a new key when that changed): no such promise.
-  assert.equal(text('t'), 'Retry the failed transfer to Happy Paws Walking? It is sent again at the current payout amount, €12.');
-  assert.doesNotMatch(text('t'), /same key|twice/);
+  assert.equal(text('t'), 'Retry the failed transfer to Happy Paws Walking? It is sent again for €12.');
+  assert.doesNotMatch(text('t'), /same request|twice/);
   // A lookup and a cancellation move no money and name none.
   assert.equal(text('l'), 'Retry the failed transfer lookup? It only asks Stripe whether the transfer exists; no money moves.');
   assert.equal(text('c'), 'Retry the failed payment cancellation? Stripe is asked again to cancel the payment that was never taken; no money moves.');
-  for (const id of ['l', 'c']) assert.doesNotMatch(text(id), /same key|€/);
+  for (const id of ['l', 'c']) assert.doesNotMatch(text(id), /same request|€/);
   // Without an amount in the row none is named, but the promise still holds for a refund.
-  assert.equal(text('n'), 'Retry the failed refund to Daan Visser? Stripe receives it again with the same key, so it can’t happen twice.');
+  assert.equal(text('n'), 'Retry the failed refund to Daan Visser? Stripe receives the same request again, so within 24 hours of the first attempt it can’t happen twice.');
   assert.equal(retryConfirmText({ id: 'x', kind: 'transfer', label: 'transfer', cents: null }, row),
-    'Retry the failed transfer to Happy Paws Walking? It is sent again at the current payout amount.');
+    'Retry the failed transfer to Happy Paws Walking? It is sent again.');
   // Deleted accounts and unknown kinds still read well.
   assert.match(retryConfirmText(jobs[0], caseRow({ customer: null })), /^Retry the failed refund of €7 to the pet parent\?/);
   assert.equal(retryConfirmText({ id: 'z', kind: 'mystery', label: 'payment job', cents: 500 }, row), 'Retry the failed payment job?');
@@ -1521,13 +1521,13 @@ test('a_pending_payouts_retry_says_it_looks_first', () => {
   // The wording of a failed payout ("it is sent again") would be wrong here: the worker looks at Stripe first, and Stripe may say reversed.
   assert.equal(retryConfirmText(job, row),
     'Retry the transfer of €17.60 to Happy Paws Walking? Zoovo first looks at Stripe for a transfer an earlier attempt may have made. If there is one, it is recorded and nothing more is sent. If there is none, €17.60 is sent. If Stripe shows the transfer was reversed, nothing is sent and the job fails again.');
-  assert.doesNotMatch(retryConfirmText(job, row), /same key|sent again/);
+  assert.doesNotMatch(retryConfirmText(job, row), /same request|sent again/);
   // Without an amount in the row none is named.
   assert.match(retryConfirmText({ ...job, cents: null }, row), /^Retry the transfer to Happy Paws Walking\? .* If there is none, the payout is sent\. /);
   assert.match(retryConfirmText(job, caseRow({ pro: null }, { transfer_status: 'pending' })), /^Retry the transfer of €17\.60 to the pro\? /);
   // A payout that failed keeps its own wording: known outcome, sent again at the payout now.
   const failed = caseRow({ problems: [], attention: 'transfer_failed' }, { transfer_status: 'failed' });
-  assert.equal(retryConfirmText(job, failed), 'Retry the failed transfer to Happy Paws Walking? It is sent again at the current payout amount, €17.60.');
+  assert.equal(retryConfirmText(job, failed), 'Retry the failed transfer to Happy Paws Walking? It is sent again for €17.60.');
   // A pending payout's other jobs keep theirs.
   assert.equal(retryConfirmText({ id: 'l', kind: 'transfer_lookup', label: 'transfer lookup', cents: null }, row),
     'Retry the failed transfer lookup? It only asks Stripe whether the transfer exists; no money moves.');

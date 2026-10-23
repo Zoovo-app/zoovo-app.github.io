@@ -134,7 +134,15 @@ form.addEventListener('submit', async (e) => {
 
   send.disabled = true;
   msg.textContent = t('sending'); msg.className = '';
-  const { data, error } = await supabaseClient().rpc('submit_bug_report', {
+  let client;
+  try {
+    client = supabaseClient();
+  } catch (err) {
+    console.error(err);
+    send.disabled = false;
+    return showError(t('failed'));
+  }
+  const { data, error } = await client.rpc('submit_bug_report', {
     p_description: description,
     p_steps: steps || null,
     p_contact_email: email || null,
