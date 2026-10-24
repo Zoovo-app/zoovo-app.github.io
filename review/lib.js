@@ -1377,6 +1377,14 @@ export function reportRowText(item) {
   };
 }
 
+// The reason as the card prints it, whole, as a sentence: a full stop after a label ("Animal welfare concern."),
+// none after a free-text reason that already ends in ".", "!", "?" or "…". '' for something this tab doesn't list.
+export function reportReasonSentence(item) {
+  const text = reportRowText(item);
+  if (text === null) return '';
+  return /[.!?…]$/.test(text.fullReason) ? text.fullReason : `${text.fullReason}.`;
+}
+
 // What the card calls a review: the pet parent who wrote it, or for a pro's review of a pet parent who it is
 // about and by whom. 'A former member' when that account is gone.
 export function reportReviewTitle(item) {
@@ -1551,10 +1559,13 @@ export function otherOpenReports(item, rows) {
     && other.target_type === item.target_type && isObject(other.target) && trimmed(other.target.id) === target);
 }
 
+// A confirm names this many other reports, then says how many more there are.
+const OTHERS_NAMED = 5;
+
 // What else the action closes, for the question before it: how many other open reports on this service, review
-// or reply, and which ones (the reason and who reported). `open` is {rows, total}: the reports loaded and how
-// many are open in all. With more open than loaded the count is "at least". '' when there is no target, or no
-// other report to name and no more to find.
+// or reply, and which ones (the reason and who reported; the first OTHERS_NAMED, then "and N more"). `open` is
+// {rows, total}: the reports loaded and how many are open in all. With more open than loaded the count is "at
+// least". '' when there is no target, or no other report to name and no more to find.
 function closedWithText(item, action, open) {
   if (!isObject(item.target)) return '';
   const rows = Array.isArray(open?.rows) ? open.rows : [];
@@ -1567,7 +1578,8 @@ function closedWithText(item, action, open) {
     return `${text.reason} (${text.by === 'Deleted account' ? 'a deleted account' : text.by})`;
   });
   const count = `${cut ? 'at least ' : ''}${others.length === 1 ? '1 other open report' : `${others.length} other open reports`}`;
-  return `This also ${action === 'dismiss' ? 'dismisses' : 'closes'} ${count} on this ${noun}: ${names.join(', ')}. They are saved with your note.`;
+  const more = names.length > OTHERS_NAMED ? ` and ${names.length - OTHERS_NAMED} more` : '';
+  return `This also ${action === 'dismiss' ? 'dismisses' : 'closes'} ${count} on this ${noun}: ${names.slice(0, OTHERS_NAMED).join(', ')}${more}. They are saved with your note.`;
 }
 
 const sentences = (...parts) => parts.filter(Boolean).join(' ');

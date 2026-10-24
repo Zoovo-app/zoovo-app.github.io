@@ -20,7 +20,7 @@ import {
   reportActions, reportTargetState, reportActionLabel, reportActionHint, validateHandling, handleArgs,
   handleConfirmText, handledText, handleErrorText, handleRefusalIsStale, TAKE_DOWN_NOTIFIED, reportFromLine,
   reportHidden, reportNoticeShown, LIST_RELOADED, otherOpenReports, reportReviewTitle, handlingProblem,
-  NOT_CONFIRMED,
+  NOT_CONFIRMED, reportReasonSentence,
 } from './lib.js';
 
 // verification as admin_list_pro_applications and admin_list_pros return it:
@@ -2221,6 +2221,65 @@ test('the_other_open_reports_are_named_in_the_confirm', () => {
   assert.equal(handleConfirmText(reply, 'hide_reply', '', { rows: [reply, rev, replyToo], total: 3 }),
     'Hide Bram’s Dog Care’s reply under Iris’s review? Only the reply is hidden; the review stays. Nobody is notified. '
     + `This also closes 1 other open report on this reply: Hate speech (Noor). ${SAVED}`);
+});
+
+test('the_card_ends_a_reason_with_one_full_stop', () => {
+  // The card prints the reason as a sentence: a full stop after a label ("Animal welfare concern."), none when a
+  // free-text reason already ends in one, or in "!", "?" or "…".
+  const sentence = (reason, report = reviewReport) => reportReasonSentence(report({ reason }));
+  assert.equal(sentence('welfare', serviceReport), 'Animal welfare concern.');
+  assert.equal(sentence('Hate speech'), 'Hate speech.');
+  assert.equal(sentence('Other: She shouted at the dogs'), 'Other: She shouted at the dogs.');
+  for (const end of ['.', '!', '?', '…']) {
+    assert.equal(sentence(`Other: She shouted at the dogs${end}`), `Other: She shouted at the dogs${end}`, end);
+  }
+  assert.equal(sentence('Other: Wait... what?!'), 'Other: Wait... what?!');
+  assert.equal(sentence('  Other: padded.  '), 'Other: padded.');
+  // Only the end counts, and only those marks.
+  assert.equal(sentence('Other: 3.5 stars'), 'Other: 3.5 stars.');
+  assert.equal(sentence('Other: “quoted.”'), 'Other: “quoted.”.');
+  // A long reason is whole in the card, with the same rule.
+  const long = `Other: ${'She shouted at the dogs and then at me. '.repeat(25).trim()}`;
+  assert.equal(sentence(long), long);
+  assert.equal(sentence(`${long} Really`), `${long} Really.`);
+  // No reason: its words, and a stop.
+  assert.equal(sentence(null), 'No reason given.');
+  for (const bad of [null, undefined, 'x', {}, { id: 'x', target_type: 'user' }]) assert.equal(reportReasonSentence(bad), '', JSON.stringify(bad));
+});
+
+test('the_confirm_names_at_most_five_other_reports', () => {
+  const mine = serviceReport();
+  const others = (n) => Array.from({ length: n }, (_, i) => serviceReport({
+    id: `rep-o${i + 1}`, reporter: { first_name: `Reporter${i + 1}` }, reason: i % 2 ? 'scam' : 'welfare',
+  }));
+  const confirmWith = (n, total, action = 'dismiss') => {
+    const rows = [mine, ...others(n)];
+    return handleConfirmText(mine, action, 'You walked more dogs at once than allowed.', { rows, total: total ?? rows.length });
+  };
+  const SAVED = 'They are saved with your note.';
+  const five = 'Animal welfare concern (Reporter1), Scam or fraud (Reporter2), Animal welfare concern (Reporter3), '
+    + 'Scam or fraud (Reporter4), Animal welfare concern (Reporter5)';
+
+  // Up to five are all named, with no "more".
+  assert.match(confirmWith(5), new RegExp(`This also dismisses 5 other open reports on this service: ${five.replace(/[()]/g, '\\$&')}\\. ${SAVED}$`));
+  assert.doesNotMatch(confirmWith(5), /more/);
+  assert.doesNotMatch(confirmWith(3), /more/);
+  // 7 others: five named, then how many are left.
+  const seven = confirmWith(7);
+  assert.ok(seven.endsWith(`This also dismisses 7 other open reports on this service: ${five} and 2 more. ${SAVED}`), seven);
+  assert.doesNotMatch(seven, /Reporter6|Reporter7/);
+  // One over the cap.
+  assert.ok(confirmWith(6).endsWith(`6 other open reports on this service: ${five} and 1 more. ${SAVED}`));
+  // The count is still all of them, and "at least" still goes with a cut list.
+  assert.ok(confirmWith(7, 41).includes('This also dismisses at least 7 other open reports on this service: '));
+  assert.ok(confirmWith(7, 41).endsWith(` and 2 more. ${SAVED}`));
+  // A take-down and the hides cap the same way.
+  assert.ok(confirmWith(7, undefined, 'take_down').endsWith(`This also closes 7 other open reports on this service: ${five} and 2 more. ${SAVED}`));
+  const rev = reviewReport();
+  const revRows = [rev, ...Array.from({ length: 7 }, (_, i) => reviewReport({ id: `rep-r${i + 2}`, reporter: { first_name: `R${i + 1}` }, reason: 'Hate speech' }))];
+  assert.ok(handleConfirmText(rev, 'hide_review', '', { rows: revRows, total: 8 })
+    .endsWith('This also closes 7 other open reports on this review: Hate speech (R1), Hate speech (R2), Hate speech (R3), Hate speech (R4), Hate speech (R5) and 2 more. '
+      + SAVED));
 });
 
 test('handled_text_is_believed_only_from_the_answer', () => {

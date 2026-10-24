@@ -13,7 +13,8 @@ import {
   verificationBadges, waitedFor, waitingTexts, whenLabel,
   NOT_CONFIRMED, TAKE_DOWN_NOTIFIED, handleArgs, handleConfirmText, handleErrorText, handleRefusalIsStale,
   handledText, handlingProblem, reportActionHint, reportActionLabel, reportActions, reportFromLine, reportHidden,
-  reportList, reportNoticeShown, reportReviewTitle, reportRowText, reportTargetState, reportWaiting,
+  reportList, reportNoticeShown, reportReasonSentence, reportReviewTitle, reportRowText, reportTargetState,
+  reportWaiting,
 } from '/review/lib.js';
 
 // Applicants choose their avatar URL (the database only checks for https), so
@@ -1698,7 +1699,7 @@ function reportCard(item) {
     el('div', { className: 'cols' },
       reportTargetPane(item),
       pane('THE REPORT',
-        el('span', {}, el('b', { textContent: `${text.fullReason}.` })), // the list cuts a long reason; the card keeps it
+        el('span', {}, el('b', { textContent: reportReasonSentence(item) })), // the list cuts a long reason; the card keeps it
         text.reported ? `As reported: ${text.reported}` : none('No text as reported.'),
         el('span', { className: 'muted', textContent: reportFromLine(item) }))),
     reportDecision(item));
