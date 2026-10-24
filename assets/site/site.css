@@ -1,0 +1,218 @@
+/* Zoovo public site: home, pros, booking, safety, FAQ.
+   Static, no build step. Colours follow the app: brand yellow, navy for
+   mascots and text, coral only as the pros accent. */
+
+@font-face{font-family:'Lato';font-style:normal;font-display:swap;font-weight:400;src:url(fonts/lato-latin-ext-400-normal.woff2) format('woff2');unicode-range:U+0100-02BA,U+02BD-02C5,U+02C7-02CC,U+02CE-02D7,U+02DD-02FF,U+0304,U+0308,U+0329,U+1D00-1DBF,U+1E00-1E9F,U+1EF2-1EFF,U+2020,U+20A0-20AB,U+20AD-20C0,U+2113,U+2C60-2C7F,U+A720-A7FF}
+@font-face{font-family:'Lato';font-style:normal;font-display:swap;font-weight:400;src:url(fonts/lato-latin-400-normal.woff2) format('woff2');unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD}
+@font-face{font-family:'Lato';font-style:normal;font-display:swap;font-weight:700;src:url(fonts/lato-latin-ext-700-normal.woff2) format('woff2');unicode-range:U+0100-02BA,U+02BD-02C5,U+02C7-02CC,U+02CE-02D7,U+02DD-02FF,U+0304,U+0308,U+0329,U+1D00-1DBF,U+1E00-1E9F,U+1EF2-1EFF,U+2020,U+20A0-20AB,U+20AD-20C0,U+2113,U+2C60-2C7F,U+A720-A7FF}
+@font-face{font-family:'Lato';font-style:normal;font-display:swap;font-weight:700;src:url(fonts/lato-latin-700-normal.woff2) format('woff2');unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD}
+@font-face{font-family:'Lato';font-style:normal;font-display:swap;font-weight:900;src:url(fonts/lato-latin-ext-900-normal.woff2) format('woff2');unicode-range:U+0100-02BA,U+02BD-02C5,U+02C7-02CC,U+02CE-02D7,U+02DD-02FF,U+0304,U+0308,U+0329,U+1D00-1DBF,U+1E00-1E9F,U+1EF2-1EFF,U+2020,U+20A0-20AB,U+20AD-20C0,U+2113,U+2C60-2C7F,U+A720-A7FF}
+@font-face{font-family:'Lato';font-style:normal;font-display:swap;font-weight:900;src:url(fonts/lato-latin-900-normal.woff2) format('woff2');unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD}
+
+:root{
+  color-scheme:light dark;
+  --navy:#0D3B66;
+  --navy-deep:#0D213B;
+  --hero:#FCDA4D;              /* top of the hill artwork */
+  --yellow-1:#FDDA3A;
+  --yellow-2:#F8C002;
+  --amber:#FFBC2C;
+  --coral:#F95738;
+  --band-1:#0D213D;            /* bottom of the hill artwork, left to right */
+  --band-2:#0C3965;
+
+  --bg:#FFFBEA;
+  --surface:#FFFFFF;
+  --text:#0D3B66;
+  --text-2:#33465A;
+  --line:#F0E2A8;
+  --link:#0D3B66;
+  --coral-text:#B2361D;        /* coral that passes 4.5:1 on light grounds */
+  --foot:#0D213B;
+}
+@media (prefers-color-scheme:dark){
+  :root{
+    --bg:#0A1627;
+    --surface:#12263F;
+    --text:#F3F6FA;
+    --text-2:#C3D0DE;
+    --line:#22395A;
+    --link:#FCDA4D;
+    --coral-text:#FF9A82;
+    --foot:#060E1A;
+  }
+}
+
+*,*::before,*::after{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--text);font:17px/1.6 Lato,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;overflow-x:hidden}
+img{max-width:100%;height:auto;display:block}
+a{color:var(--link);text-underline-offset:3px}
+a:hover{text-decoration-thickness:2px}
+:focus-visible{outline:3px solid var(--coral);outline-offset:3px;border-radius:4px}
+h1,h2,h3{line-height:1.12;font-weight:900;margin:0}
+p{margin:0}
+.wrap{max-width:1200px;margin:0 auto;padding-inline:16px}
+@media (min-width:700px){.wrap{padding-inline:24px}}
+.skip{position:absolute;left:-9999px;top:8px;background:var(--navy);color:#fff;padding:10px 16px;border-radius:999px;z-index:10}
+.skip:focus{left:16px}
+.visually-hidden{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+
+/* Hide the page until the Dutch text is in, so NL readers never see a flash
+   of English. lang.js sets the class, site.js removes it (and a timeout in
+   lang.js removes it anyway if site.js never runs). */
+html.i18n-wait body{visibility:hidden}
+
+/* Yellow areas keep navy text in both themes. */
+.on-yellow{--text:#0D3B66;--text-2:#0D213B;--link:#0D3B66;color:var(--text)}
+
+/* ---------- header ---------- */
+.site-head{padding-block:14px}
+.nav{display:flex;flex-wrap:wrap;align-items:center;gap:10px 24px}
+.brand{flex-grow:1;line-height:0}
+.brand img{height:34px;width:auto}
+.nav-links{display:flex;flex-wrap:wrap;align-items:center;gap:6px 20px;font-weight:900;font-size:15px;margin:0;padding:0;list-style:none}
+.nav-links a{text-decoration:none;padding-block:10px;display:inline-block}
+.nav-links a:hover,.nav-links a[aria-current=page]{text-decoration:underline;text-decoration-thickness:3px}
+.lang{display:inline-flex;border:2px solid #0D3B66;border-radius:999px;overflow:hidden}
+.lang button{font:inherit;font-size:13px;font-weight:900;color:#0D3B66;background:transparent;border:0;padding:8px 12px;min-width:44px;cursor:pointer}
+.lang button[aria-pressed=true]{background:#0D3B66;color:#FCDA4D}
+@media (max-width:560px){
+  .nav-links{order:3;width:100%;justify-content:space-between;gap:4px 12px}
+}
+
+/* ---------- hero ---------- */
+.hero{background:var(--hero)}
+.hero-copy{max-width:900px;margin:0 auto;padding:36px 16px 0;text-align:center}
+.hero h1{font-size:clamp(38px,7vw,76px);line-height:1.02;letter-spacing:-.5px}
+.hero .lead{margin:18px auto 0;max-width:620px}
+.hero .store{justify-content:center}
+.hero-art{width:100%;margin-top:4px}
+.lead{font-size:clamp(18px,2vw,21px);line-height:1.5;color:var(--text-2)}
+.store{display:flex;flex-wrap:wrap;align-items:center;gap:10px 16px;margin-top:26px}
+.store-badge{display:inline-block;line-height:0;border-radius:10px}
+.store-badge img{height:52px;width:auto}
+.store-note{font-size:14px;font-weight:700;width:100%}
+
+/* ---------- sections ---------- */
+.section{padding-block:72px}
+@media (min-width:900px){.section{padding-block:96px}}
+.section-tight{padding-top:0}
+.eyebrow{font-weight:900;font-size:15px;letter-spacing:.2px;margin-bottom:8px;color:var(--text)}
+.h2{font-size:clamp(30px,4vw,44px)}
+.h3{font-size:20px}
+.intro{display:flex;flex-wrap:wrap;gap:16px 32px;align-items:flex-end;justify-content:space-between}
+.intro>div{flex:1 1 520px}
+.intro .lead{margin-top:14px;max-width:640px}
+.care-cat{width:150px}
+@media (max-width:699px){.care-cat{display:none}}
+.rollout{display:inline-block;font-size:13px;font-weight:900;color:#0D213B;background:var(--amber);border-radius:999px;padding:5px 12px;margin-bottom:14px}
+.more{margin-top:24px;font-weight:900}
+
+/* navy band that continues the bottom of the hill */
+.band{background:linear-gradient(90deg,var(--band-1),var(--band-2));color:#fff;--text:#fff;--text-2:#DBE6F2;--link:#FCDA4D}
+.band .eyebrow{color:#FCDA4D}
+.community{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,320px),1fr));gap:48px 40px;align-items:center;padding-block:24px 88px}
+.screens{display:flex;justify-content:center;gap:16px}
+.screens img{width:46%;max-width:240px}
+.screens img:first-child{transform:rotate(-4deg)}
+.screens img:last-child{transform:rotate(3deg);margin-top:48px}
+.ticks{list-style:none;margin:24px 0 0;padding:0;display:grid;gap:14px;font-size:18px;color:var(--text-2)}
+.ticks strong{color:var(--text)}
+
+.steps{list-style:none;padding:0;margin:40px 0 0;display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,240px),1fr));gap:16px;counter-reset:step}
+.card{background:var(--surface);border-radius:24px;padding:24px;box-shadow:0 1px 0 var(--line)}
+.card p{margin-top:6px;color:var(--text-2)}
+.steps .card::before{counter-increment:step;content:counter(step);display:flex;width:40px;height:40px;border-radius:50%;background:var(--hero);color:#0D3B66;align-items:center;justify-content:center;font-weight:900;margin-bottom:14px}
+.features{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,240px),1fr));gap:32px;margin-top:32px}
+.features p{margin-top:6px;color:var(--text-2)}
+.paw{width:56px;transform:rotate(-7deg);margin-bottom:12px;filter:drop-shadow(0 0 1px #0D3B66)}
+
+.pros-band{position:relative;margin-top:96px}
+/* the kitten stretches on the top edge of the band, paws on the ledge */
+.pros-band .kitten{position:absolute;right:8%;top:-114px;width:170px;pointer-events:none}
+.pros-band .inner{display:flex;flex-wrap:wrap;gap:28px 32px;align-items:center;padding-block:72px}
+.pros-band .inner>div{flex:1 1 520px}
+.pros-band .eyebrow{color:#FF9A82}
+.pros-band p{margin-top:14px;font-size:18px;color:var(--text-2)}
+
+.btn{display:inline-block;font-weight:900;font-size:19px;text-decoration:none;border-radius:999px;padding:14px 26px;min-height:48px}
+.btn-coral{background:var(--coral);color:#fff}
+.btn-coral:hover{background:#E8492B}
+.btn-navy{background:#0D3B66;color:#FCDA4D}
+
+.faq-teaser{display:grid;gap:12px;margin-top:28px}
+.cta{background:linear-gradient(180deg,var(--yellow-1),var(--yellow-2))}
+.cta .inner{max-width:900px;margin:0 auto;padding:64px 16px;display:flex;flex-wrap:wrap;gap:20px 28px;align-items:center;justify-content:center;text-align:center}
+.cta img.bird{width:120px}
+.cta .inner>div{flex:1 1 320px}
+.cta .h2{font-size:clamp(28px,3.5vw,40px)}
+.cta p{margin-top:8px}
+
+/* ---------- inner pages ---------- */
+.top{background:var(--yellow-1)}
+.page-head{background:linear-gradient(180deg,var(--yellow-1),var(--yellow-2))}
+.page-head .head-body{display:flex;flex-wrap:wrap;align-items:flex-end;gap:16px 32px;padding-top:28px}
+.page-head .head-copy{flex:1 1 520px;padding-bottom:48px}
+.page-head h1{font-size:clamp(36px,5.5vw,60px);letter-spacing:-.3px}
+.page-head .lead{margin-top:16px;max-width:640px}
+.page-head .mascot{width:clamp(130px,22vw,220px);margin-inline:auto 0}
+.page-head .store{margin-top:22px}
+.page-head .rollout{background:#fff}
+
+.prose{max-width:760px}
+.prose h2{font-size:clamp(26px,3.2vw,34px);margin-top:56px}
+.prose h2:first-child{margin-top:0}
+.prose .eyebrow+h2{margin-top:0}
+.prose h3{font-size:20px;margin-top:28px}
+.prose p,.prose ul,.prose ol{margin-top:12px;color:var(--text-2)}
+.prose li{margin-top:6px}
+.prose strong{color:var(--text)}
+.split{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,300px),1fr));gap:48px;align-items:start}
+
+.table-box{overflow-x:auto;margin-top:20px;border-radius:20px;background:var(--surface);box-shadow:0 1px 0 var(--line)}
+table{border-collapse:collapse;width:100%;min-width:520px;font-size:16px}
+th,td{text-align:left;padding:14px 18px;border-bottom:1px solid var(--line);vertical-align:top}
+thead th{font-weight:900}
+tbody tr:last-child td,tbody tr:last-child th{border-bottom:0}
+td{color:var(--text-2)}
+
+.badges{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,220px),1fr));gap:16px;margin-top:24px}
+.badge-card h3{font-size:18px}
+.badge-card p{margin-top:4px;color:var(--text-2);font-size:16px}
+
+.chips{display:flex;flex-wrap:wrap;gap:8px;list-style:none;padding:0;margin:20px 0 0}
+.chips li{background:var(--surface);border-radius:999px;padding:8px 16px;font-weight:700;box-shadow:0 1px 0 var(--line)}
+
+.faq-group+.faq-group{margin-top:56px}
+.faq-group h2{font-size:clamp(24px,3vw,32px)}
+details{background:var(--surface);border-radius:18px;margin-top:12px;box-shadow:0 1px 0 var(--line)}
+summary{cursor:pointer;list-style:none;padding:18px 52px 18px 20px;font-weight:900;font-size:18px;position:relative}
+summary::-webkit-details-marker{display:none}
+summary::after{content:'+';position:absolute;right:20px;top:50%;transform:translateY(-50%);font-size:26px;line-height:1}
+details[open] summary::after{content:'\2212'}
+details .answer{padding:0 20px 20px;color:var(--text-2)}
+details .answer p+p{margin-top:10px}
+
+.pro-accent .eyebrow{color:var(--coral-text)}
+.pro-accent .band .eyebrow{color:#FF9A82}
+.notice{border-radius:20px;background:var(--surface);padding:20px 22px;margin-top:24px;box-shadow:0 1px 0 var(--line)}
+
+/* ---------- footer ---------- */
+.site-foot{background:var(--foot);color:#C9D6E4;font-size:15px}
+.site-foot .inner{display:flex;flex-wrap:wrap;gap:12px 28px;align-items:center;padding-block:32px}
+.site-foot img{height:26px;width:auto}
+.site-foot ul{display:flex;flex-wrap:wrap;gap:4px 24px;list-style:none;margin:0;padding:0}
+.site-foot a{color:#fff;display:inline-block;padding-block:8px}
+.site-foot .legal{flex-grow:1;text-align:right}
+@media (max-width:700px){.site-foot .legal{text-align:left;width:100%}}
+
+/* Navy mascots standing on the page background get a soft yellow rim in
+   dark mode, or they disappear into it. */
+@media (prefers-color-scheme:dark){
+  .rim{filter:drop-shadow(0 0 1.5px #FCDA4D) drop-shadow(0 0 12px rgba(252,218,77,.3))}
+}
+
+@media (prefers-reduced-motion:no-preference){
+  html{scroll-behavior:smooth}
+}
