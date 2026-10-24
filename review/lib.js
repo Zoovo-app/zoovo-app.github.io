@@ -1360,6 +1360,14 @@ export function reportWaiting(item, now = Date.now()) {
   return { list: long, card: `Reported ${whenLabel(iso)} · waiting ${long}` };
 }
 
+// Whether the team has hidden what this report is about. The server sends `hidden` only on a review report's
+// target and `reply_hidden` only on a reply report's, so each reads its own flag and never the other's.
+export function reportHidden(item) {
+  if (reportKind(item) === null || !isObject(item.target)) return false;
+  if (item.target_type === 'review') return item.target.hidden === true;
+  return item.target_type === 'review_reply' && item.target.reply_hidden === true;
+}
+
 // The actions the team has on a report: a service gets dismiss and take down, a review dismiss and hide review,
 // a reply dismiss and hide reply. The server refuses an action on a target that is gone or already in that
 // state (not_eligible), so when the item says what the target is now (it has the `target` key) only dismiss is
@@ -1377,9 +1385,9 @@ export function reportActions(item) {
     case 'service':
       return typeof t.status !== 'string' || t.status === 'live' || t.status === 'paused' ? [...only, 'take_down'] : only;
     case 'review':
-      return t.hidden === true ? only : [...only, 'hide_review'];
+      return reportHidden(item) ? only : [...only, 'hide_review'];
     default:
-      return trimmed(t.reply) === null || t.reply_hidden === true ? only : [...only, 'hide_reply'];
+      return trimmed(t.reply) === null || reportHidden(item) ? only : [...only, 'hide_reply'];
   }
 }
 
@@ -1398,10 +1406,10 @@ export function reportTargetState(item) {
       return `This service is ${t.status}, so it can’t be taken down. The report can only be dismissed.`;
     }
   } else if (item.target_type === 'review') {
-    if (t.hidden === true) return `This review is hidden already, ${only}`;
+    if (reportHidden(item)) return `This review is hidden already, ${only}`;
   } else {
     if (trimmed(t.reply) === null) return `This review has no reply any more, ${only}`;
-    if (t.reply_hidden === true) return `This reply is hidden already, ${only}`;
+    if (reportHidden(item)) return `This reply is hidden already, ${only}`;
   }
   return null;
 }
@@ -1415,8 +1423,9 @@ export function reportActionLabel(action) {
   return typeof action === 'string' && Object.hasOwn(REPORT_ACTION_LABELS, action) ? REPORT_ACTION_LABELS[action] : '';
 }
 
-// Under a take-down's reason, and in its question: the pro reads the reason.
-export const TAKE_DOWN_NOTIFIED = 'The pro is notified with this reason, in the app and by push.';
+// Under a take-down's reason, and in its question: the pro reads the reason. The in-app notice is always made;
+// whether a push goes with it depends on the pro's settings, so the words don't promise one.
+export const TAKE_DOWN_NOTIFIED = 'The pro gets a notification with your reason.';
 
 // The sentence beside an action's button: R11's, with this report's names.
 export function reportActionHint(item, action) {
@@ -1474,7 +1483,7 @@ export function handleConfirmText(item, action, text) {
   switch (action) {
     case 'take_down':
       return `Take down ${serviceName(title)}${pro ? ` (${pro})` : ''}? It is set to Removed: pet parents can’t find or book it, and bookings already made go ahead. `
-        + `${TAKE_DOWN_NOTIFIED.slice(0, -1)}: “${typeof text === 'string' ? text.trim() : ''}” It is saved as the note too. ${closes}.`;
+        + `${TAKE_DOWN_NOTIFIED} It reads: “${typeof text === 'string' ? text.trim() : ''}” It is saved as the note too. ${closes}.`;
     case 'hide_review':
       return `Hide the review by ${author ?? formerMember}? It disappears from the service page and from ${theirs} rating. `
         + `${author ? `${author} still sees it, marked hidden. ` : ''}Nobody is notified. ${closes}, with your note.`;
@@ -1505,13 +1514,12 @@ export function handledText(answer, item, action) {
   if (info === null || typeof action !== 'string' || !Object.hasOwn(HANDLED_ACTIONS, action) || !isObject(answer)) return null;
   const report = answer.report;
   const done = isObject(report) ? report.handled : null;
-  if (!isObject(done) || report.id !== item.id || report.target_type !== item.target_type) return null;
+  if (!isObject(done) || report.id !== item.id) return null;
   if (done.action !== HANDLED_ACTIONS[action]) return null;
   if (typeof done.at !== 'string' || !Number.isFinite(Date.parse(done.at))) return null;
   const { t, author, pro, title } = targetParts(report.target);
   if (action === 'take_down' && t?.status !== 'removed') return null;
-  if (action === 'hide_review' && t?.hidden !== true) return null;
-  if (action === 'hide_reply' && t?.reply_hidden !== true) return null;
+  if ((action === 'hide_review' || action === 'hide_reply') && !reportHidden(report)) return null;
 
   const said = {
     dismiss: 'Report dismissed. Nothing changed.',
@@ -1531,17 +1539,38 @@ export function handleRefusalIsStale(error) {
 }
 
 // A failed action in words. The database's own reason is shown as it is; any other failure may or may not
-// have gone through.
+// have gone through. A stale refusal doesn't say the list was reloaded: the page says so (reportNoticeShown),
+// once it has.
 export function handleErrorText(error) {
   const message = trimmed(error?.message);
   if (error?.code === '42501' || /Admins only/.test(message ?? '')) return 'Couldn’t save: this account isn’t an admin.';
   if (handleRefusalIsStale(error)) {
-    return `Couldn’t save: the server refused it (${message ?? 'not_eligible'}). Someone may have handled this report already, or what it is about has changed. The list was reloaded; check the report before trying again.`;
+    return `Couldn’t save: the server refused it (${message ?? 'not_eligible'}). Someone may have handled this report already, or what it is about has changed.`;
   }
   if (error?.hint === 'invalid_input' || /invalid_input/.test(message ?? '')) {
     return `Couldn’t save: the server refused it (${message ?? 'invalid_input'}).`;
   }
   return `Couldn’t save: ${message ?? 'unknown error'}. Refresh the list to see whether it went through.`;
+}
+
+export const LIST_RELOADED = 'The list was reloaded; check the report before trying again.';
+
+// The notice above the list after an action, {kind: 'ok'|'warn'|'bad', text, reloads?: true}, as it is
+// shown: with `reloads` it adds that the list was reloaded. When the list could not be loaded again
+// (`reloadError` is the reason), the notice stays, so a reviewer who has just been told "done" doesn't do it
+// twice, and says the page may be out of date; a green notice turns amber for it. null for something that isn't
+// a notice.
+export function reportNoticeShown(notice, reloadError) {
+  if (!isObject(notice) || typeof notice.text !== 'string') return null;
+  const kind = ['ok', 'warn', 'bad'].includes(notice.kind) ? notice.kind : 'warn';
+  if (reloadError === null || reloadError === undefined) {
+    return { kind, text: notice.reloads === true ? `${notice.text} ${LIST_RELOADED}` : notice.text };
+  }
+  const why = trimmed(reloadError) ?? 'unknown error';
+  return {
+    kind: kind === 'ok' ? 'warn' : kind,
+    text: `${notice.text} Couldn’t reload the list (${why}), so what is on screen may be out of date: refresh it before you handle another report.`,
+  };
 }
 
 // ---- One request per case ------------------------------------------------------

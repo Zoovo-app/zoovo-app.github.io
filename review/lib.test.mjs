@@ -19,6 +19,7 @@ import {
   markHandledConfirmText, markedHandledText, markHandledErrorText, reportList, reportRowText, reportWaiting,
   reportActions, reportTargetState, reportActionLabel, reportActionHint, validateHandling, handleArgs,
   handleConfirmText, handledText, handleErrorText, handleRefusalIsStale, TAKE_DOWN_NOTIFIED, reportFromLine,
+  reportHidden, reportNoticeShown, LIST_RELOADED,
 } from './lib.js';
 
 // verification as admin_list_pro_applications and admin_list_pros return it:
@@ -1720,8 +1721,6 @@ test('report_actions_per_target', () => {
   assert.deepEqual(reportActions(replyReport({ target: null })), ['dismiss']);
   assert.deepEqual(reportActions(replyReport({ target: reviewTarget({ reply_hidden: true }) })), ['dismiss']);
   assert.deepEqual(reportActions(replyReport({ target: reviewTarget({ reply: null, reply_hidden: false }) })), ['dismiss']);
-  // Hiding the review doesn't hide its reply's report from the list, and a hidden review's reply can still be hidden.
-  assert.deepEqual(reportActions(replyReport({ target: reviewTarget({ hidden: true, reply_hidden: false }) })), ['dismiss', 'hide_reply']);
 
   // Nothing for a report already handled, or one this tab doesn't take.
   assert.deepEqual(reportActions(serviceReport({ handled: { at: '2026-10-22T09:00:00Z', action: 'dismissed', note: 'x' } })), []);
@@ -1765,10 +1764,34 @@ test('report_target_state_says_why_only_dismiss_is_left', () => {
     serviceReport({ target: { ...gone, status: 'draft' } }), reviewReport(), reviewReport({ target: null }),
     reviewReport({ target: reviewTarget({ hidden: true }) }), replyReport(), replyReport({ target: null }),
     replyReport({ target: reviewTarget({ reply: null }) }), replyReport({ target: reviewTarget({ reply_hidden: true }) }),
-    replyReport({ target: reviewTarget({ hidden: true, reply_hidden: false }) }),
+    replyReport({ target: reviewTarget({ reply_hidden: false }) }),
   ]) {
     assert.equal(reportTargetState(item) !== null, reportActions(item).length === 1, JSON.stringify(item));
   }
+});
+
+test('report_hidden_reads_the_flag_of_its_own_target_type', () => {
+  // The server sends `hidden` only on a review report's target and `reply_hidden` only on a reply report's, so
+  // each report reads its own flag, never the other's.
+  assert.equal(reportHidden(reviewReport()), false);
+  assert.equal(reportHidden(reviewReport({ target: reviewTarget({ hidden: true }) })), true);
+  assert.equal(reportHidden(replyReport()), false);
+  assert.equal(reportHidden(replyReport({ target: reviewTarget({ reply_hidden: true }) })), true);
+  assert.equal(reportHidden(reviewReport({ target: reviewTarget({ reply_hidden: true }) })), false);
+  assert.equal(reportHidden(replyReport({ target: reviewTarget({ hidden: true }) })), false);
+  // No flag, no target, a service (it has a status instead) or something else: not hidden.
+  assert.equal(reportHidden(reviewReport({ target: reviewTarget() })), false);
+  assert.equal(reportHidden(reviewReport({ target: null })), false);
+  assert.equal(reportHidden(serviceReport({ target: { ...serviceReport().target, hidden: true, reply_hidden: true } })), false);
+  for (const bad of [null, undefined, 'x', {}, { id: 'x', target_type: 'user' }]) assert.equal(reportHidden(bad), false, JSON.stringify(bad));
+
+  // The action and the sentence follow the same flag.
+  assert.deepEqual(reportActions(reviewReport({ target: reviewTarget({ reply_hidden: true }) })), ['dismiss', 'hide_review']);
+  assert.deepEqual(reportActions(replyReport({ target: reviewTarget({ hidden: true }) })), ['dismiss', 'hide_reply']);
+  assert.equal(reportTargetState(reviewReport({ target: reviewTarget({ reply_hidden: true }) })), null);
+  assert.equal(reportTargetState(replyReport({ target: reviewTarget({ hidden: true }) })), null);
+  assert.deepEqual(reportActions(reviewReport({ target: reviewTarget({ hidden: true, reply_hidden: false }) })), ['dismiss']);
+  assert.deepEqual(reportActions(replyReport({ target: reviewTarget({ hidden: false, reply_hidden: true }) })), ['dismiss']);
 });
 
 test('report_action_words', () => {
@@ -1795,7 +1818,7 @@ test('report_action_words', () => {
   assert.equal(reportActionHint(replyReport(), 'hide_reply'),
     'Hides only the reply; the review stays. Only on a reply report. Needs the note.');
   assert.equal(reportActionHint(serviceReport(), 'delete'), '');
-  assert.equal(TAKE_DOWN_NOTIFIED, 'The pro is notified with this reason, in the app and by push.');
+  assert.equal(TAKE_DOWN_NOTIFIED, 'The pro gets a notification with your reason.');
 });
 
 test('handle_args_build_the_rpc_call', () => {
@@ -1872,10 +1895,12 @@ test('handle_confirm_text_names_what_happens', () => {
   const takeDown = handleConfirmText(serviceReport(), 'take_down', `  ${reason}  `);
   assert.equal(takeDown,
     'Take down “Dog walking, 45 min” (Bram’s Dog Care)? It is set to Removed: pet parents can’t find or book it, and bookings already made go ahead. '
-    + `The pro is notified with this reason, in the app and by push: “${reason}” It is saved as the note too. `
+    + `The pro gets a notification with your reason. It reads: “${reason}” It is saved as the note too. `
     + 'Every open report on the same service is closed with it.');
-  assert.match(takeDown, /The pro is notified/);
-  assert.ok(takeDown.includes(TAKE_DOWN_NOTIFIED.slice(0, -1) + ':'));
+  // Not "by push": the in-app notice is always made, the push depends on the pro's settings.
+  assert.match(takeDown, /The pro gets a notification with your reason\./);
+  assert.doesNotMatch(takeDown, /push|is notified/);
+  assert.ok(takeDown.includes(TAKE_DOWN_NOTIFIED));
   assert.match(handleConfirmText(serviceReport({ target: { ...serviceReport().target, pro_display_name: null } }), 'take_down', reason),
     /^Take down “Dog walking, 45 min”\? /);
 
@@ -1944,6 +1969,9 @@ test('handled_text_is_believed_only_from_the_answer', () => {
   assert.equal(handledText(answer(hiddenReply, 2), replyReport(), 'hide_reply'),
     'Bram’s Dog Care’s reply is hidden. The review stays. 1 other report on the same reply was closed with it.');
   assert.equal(handledText(answer({ ...hiddenReply, target: reviewTarget({ reply_hidden: false }) }), replyReport(), 'hide_reply'), null);
+  // Each hide is believed from its own flag: the other type's doesn't prove it.
+  assert.equal(handledText(answer({ ...hiddenReply, target: reviewTarget({ hidden: true }) }), replyReport(), 'hide_reply'), null);
+  assert.equal(handledText(answer({ ...hiddenReview, target: reviewTarget({ reply_hidden: true }) }), reviewReport(), 'hide_review'), null);
 
   // Not believed: another report, another action, no handling, no time, or something that isn't an answer.
   const ok = answer({ ...serviceReport(), handled: handled('dismissed') });
@@ -1970,10 +1998,15 @@ test('handle_errors_in_words', () => {
   // Not an admin.
   assert.equal(handleErrorText({ code: '42501', message: 'Admins only' }), 'Couldn’t save: this account isn’t an admin.');
   assert.equal(handleErrorText({ message: 'Admins only' }), 'Couldn’t save: this account isn’t an admin.');
+  // The code alone says it: PostgREST words a missing grant its own way.
+  assert.equal(handleErrorText({ code: '42501', message: 'permission denied for function admin_handle_report' }),
+    'Couldn’t save: this account isn’t an admin.');
+  assert.equal(handleErrorText({ code: '42501' }), 'Couldn’t save: this account isn’t an admin.');
+  assert.notEqual(handleErrorText({ code: '42502', message: 'permission denied' }), 'Couldn’t save: this account isn’t an admin.');
   // The state changed under the reviewer (22023 not_eligible): the server's own reason, and the list is reloaded.
   const handledAlready = { code: '22023', hint: 'not_eligible', message: 'This report was handled already' };
   assert.equal(handleErrorText(handledAlready),
-    'Couldn’t save: the server refused it (This report was handled already). Someone may have handled this report already, or what it is about has changed. The list was reloaded; check the report before trying again.');
+    'Couldn’t save: the server refused it (This report was handled already). Someone may have handled this report already, or what it is about has changed.');
   assert.equal(handleRefusalIsStale(handledAlready), true);
   assert.equal(handleRefusalIsStale({ code: '22023', hint: 'not_eligible', message: 'The service is gone, or not live or paused' }), true);
   assert.equal(handleRefusalIsStale({ message: 'not_eligible' }), true);
@@ -1988,4 +2021,34 @@ test('handle_errors_in_words', () => {
   assert.equal(handleRefusalIsStale({ message: 'network error' }), false);
   assert.equal(handleRefusalIsStale(null), false);
   assert.equal(handleRefusalIsStale(undefined), false);
+});
+
+test('a_notice_survives_a_failed_reload', () => {
+  // What the page shows above the list after an action: the answer's notice, kept when the list can't be loaded again.
+  assert.equal(LIST_RELOADED, 'The list was reloaded; check the report before trying again.');
+  const done = { kind: 'ok', text: 'Report dismissed. Nothing changed.' };
+  assert.deepEqual(reportNoticeShown(done, null), done);
+  assert.deepEqual(reportNoticeShown(done, undefined), done);
+  // The list could not be loaded again: the success still stands, and the reviewer is told why not to retry.
+  assert.deepEqual(reportNoticeShown(done, 'boom'), {
+    kind: 'warn',
+    text: 'Report dismissed. Nothing changed. Couldn’t reload the list (boom), so what is on screen may be out of date: refresh it before you handle another report.',
+  });
+  assert.equal(reportNoticeShown(done, '  ').text.includes('(unknown error)'), true);
+  assert.equal(reportNoticeShown(done, 5).text.includes('(unknown error)'), true);
+  // A notice that says the list was reloaded only says so when it was.
+  const stale = { kind: 'bad', text: 'Couldn’t save: the server refused it (This report was handled already).', reloads: true };
+  assert.deepEqual(reportNoticeShown(stale, null),
+    { kind: 'bad', text: `Couldn’t save: the server refused it (This report was handled already). ${LIST_RELOADED}` });
+  const failed = reportNoticeShown(stale, 'network error');
+  assert.equal(failed.kind, 'bad');
+  assert.doesNotMatch(failed.text, /The list was reloaded/);
+  assert.match(failed.text, /Couldn’t reload the list \(network error\)/);
+  // The odd answer is a warning either way.
+  const odd = { kind: 'warn', text: 'The server answered, but not with the report that was sent.', reloads: true };
+  assert.equal(reportNoticeShown(odd, null).text, `The server answered, but not with the report that was sent. ${LIST_RELOADED}`);
+  assert.equal(reportNoticeShown(odd, 'boom').kind, 'warn');
+  // Not a notice.
+  for (const bad of [null, undefined, 'x', {}, { kind: 'ok' }, { text: 5 }]) assert.equal(reportNoticeShown(bad, null), null, JSON.stringify(bad));
+  assert.equal(reportNoticeShown({ kind: 'weird', text: 'x' }, null).kind, 'warn');
 });

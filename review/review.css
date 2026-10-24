@@ -167,8 +167,8 @@ table.cases{width:100%;min-width:760px;border-collapse:collapse;font-size:14px}
 .banner.stray p{margin:6px 0 0;font-weight:400}
 .btn.outline{background:#fff;color:var(--navy);border:1px solid var(--navy)}
 .cases.reports td{overflow-wrap:anywhere}
-.cases .kind{font-size:12px;font-weight:700;letter-spacing:1px;color:var(--muted)}
-.cases tr.selected .wait{font-weight:700;color:#8a5a00}
+.cases.reports .kind{font-size:12px;font-weight:700;letter-spacing:1px;color:var(--muted)}
+.cases.reports tr.selected .wait{font-weight:700;color:#8a5a00}
 .pane .quote{white-space:pre-wrap}
 .pane .box.reply{background:#fff;border:1px solid var(--line)}
 .actions .option label.stack{flex:1 1 100%;flex-direction:column;align-items:stretch;gap:6px;font-size:14px}

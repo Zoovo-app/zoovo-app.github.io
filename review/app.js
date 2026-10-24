@@ -13,7 +13,7 @@ import {
   verificationBadges, waitedFor, waitingTexts, whenLabel,
   TAKE_DOWN_NOTIFIED, handleArgs, handleConfirmText, handleErrorText, handleRefusalIsStale, handledText,
   reportActionHint, reportActionLabel, reportActions, reportFromLine, reportList, reportRowText,
-  reportTargetState, reportWaiting, validateHandling,
+  reportHidden, reportNoticeShown, reportTargetState, reportWaiting, validateHandling,
 } from '/review/lib.js';
 
 // Applicants choose their avatar URL (the database only checks for https), so
@@ -493,6 +493,10 @@ async function loadReports(seq) {
     $('listMsg').textContent = error?.code === 'PGRST202'
       ? "The reports view isn't set up yet. Apply migrations 117 to 122 from the Zoovo-app/zoovo-app repo, then reload this page."
       : error ? `Couldn't load reports: ${error.message}` : "Couldn't load reports: the answer isn't a report list.";
+    // An action has just been answered and the list can't be loaded again: its notice stays, so the reviewer
+    // doesn't do it twice.
+    const kept = reportNotice ? reportNoticeShown(reportNotice, error?.message ?? 'the answer isn’t a report list') : null;
+    $('list').replaceChildren(...(kept ? [notice(kept.kind, kept.text)] : []));
     return;
   }
   rows = parsed.items;
@@ -1615,9 +1619,10 @@ function renderReports() {
   const more = reportTotal > rows.length ? ` (the oldest ${rows.length} are shown)` : '';
   $('listMsg').textContent = rows.length ? `${reportTotal} open, oldest first${more}` : 'No open reports.';
   const chosen = rows.find((r) => r.id === selectedReport);
+  const shown = reportNotice ? reportNoticeShown(reportNotice, null) : null; // the list was loaded just now
   $('list').replaceChildren(...[
     el('p', { className: 'muted', textContent: REPORTS_INTRO }),
-    reportNotice ? notice(reportNotice.kind, reportNotice.text) : null,
+    shown ? notice(shown.kind, shown.text) : null,
     rows.length ? reportsTable() : null,
     chosen ? reportCard(chosen) : null,
     rows.length ? el('p', { className: 'muted', textContent: REPORTS_FOOTNOTE }) : null,
@@ -1664,13 +1669,18 @@ function reportTargetPane(item) {
   const comment = text(t.comment);
   const reply = text(t.reply);
   const hidden = (label) => el('span', { className: 'tag warn', textContent: label });
+  // The server sends one flag per kind of report (`hidden` for a review, `reply_hidden` for a reply): the one
+  // this report is about is shown, on the review or on the reply.
+  const flagged = reportHidden(item);
+  const reviewHidden = flagged && item.target_type === 'review';
+  const replyHidden = flagged && item.target_type === 'review_reply';
   return pane('THE REVIEW AND ITS REPLY',
-    el('span', {}, el('b', { textContent: text(t.author_first_name) ?? 'A former member' }), t.hidden === true ? ' ' : null,
-      t.hidden === true ? hidden('review hidden by the team') : null),
+    el('span', {}, el('b', { textContent: text(t.author_first_name) ?? 'A former member' }), reviewHidden ? ' ' : null,
+      reviewHidden ? hidden('review hidden by the team') : null),
     comment ? el('span', { className: 'quote', textContent: `“${comment}”` }) : none('No comment.'),
     reply
       ? el('div', { className: 'box reply' }, el('b', { textContent: `Reply from ${text(t.pro_display_name) ?? 'the pro'}` }),
-        `: “${reply}”`, t.reply_hidden === true ? ' ' : null, t.reply_hidden === true ? hidden('reply hidden by the team') : null)
+        `: “${reply}”`, replyHidden ? ' ' : null, replyHidden ? hidden('reply hidden by the team') : null)
       : none('No reply.'));
 }
 
@@ -1784,7 +1794,7 @@ async function finishReportAction(item, action, token, { data, error }) {
       return load();
     }
     if (handleRefusalIsStale(error)) {
-      reportNotice = { kind: 'bad', text };
+      reportNotice = { kind: 'bad', text, reloads: true };
       keepNotice = true;
       return load();
     }
@@ -1795,7 +1805,7 @@ async function finishReportAction(item, action, token, { data, error }) {
   if (said) reportDrafts.delete(id);
   if (!here) return load();
   reportNotice = said ? { kind: 'ok', text: said }
-    : { kind: 'warn', text: 'The server answered, but not with the report that was sent. The list was reloaded; check it before you do anything else.' };
+    : { kind: 'warn', text: 'The server answered, but not with the report that was sent.', reloads: true };
   keepNotice = true;
   return load();
 }
