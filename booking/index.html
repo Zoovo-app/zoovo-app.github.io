@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; font-src 'self'; base-uri 'none'; form-action 'none'; object-src 'none'">
+<title>How booking works · Zoovo</title>
+<meta name="description" content="How booking, payments and cancellations work on Zoovo: finding a pro, paying with card, iDEAL or Apple Pay, free cancellation with real dates, reporting a problem and two-way reviews.">
+<link rel="canonical" href="https://zoovo-app.github.io/booking/">
+<meta name="apple-itunes-app" content="app-id=6778077059">
+<meta name="theme-color" content="#FDDA3A">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Zoovo">
+<meta property="og:title" content="How booking works · Zoovo">
+<meta property="og:description" content="Booking, payments and cancellations on Zoovo, with no small print.">
+<meta property="og:url" content="https://zoovo-app.github.io/booking/">
+<meta property="og:image" content="https://zoovo-app.github.io/assets/site/img/og-image.jpg">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" href="/favicon.ico" sizes="32x32">
+<link rel="icon" href="/assets/site/img/favicon-48.png" type="image/png">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="preload" href="/assets/site/fonts/lato-latin-900-normal.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="/assets/site/site.css">
+<script src="/assets/site/lang.js"></script>
+</head>
+<body data-page="booking">
+<a class="skip" href="#main" data-t="common.skip">Skip to content</a>
+
+<div class="top on-yellow">
+  <header class="site-head wrap">
+    <nav class="nav" aria-label="Main" data-t-aria="common.navLabel">
+      <a class="brand" href="/"><img src="/assets/site/img/logo-navy.webp" width="600" height="179" alt="Zoovo home" data-t-alt="common.home"></a>
+      <ul class="nav-links">
+        <li><a href="/pros/" data-t="common.navPros">For pros</a></li>
+        <li><a href="/booking/" aria-current="page" data-t="common.navBooking">Booking</a></li>
+        <li><a href="/safety/" data-t="common.navSafety">Safety</a></li>
+        <li><a href="/faq/" data-t="common.navFaq">FAQ</a></li>
+      </ul>
+      <div class="lang" role="group" aria-label="Language" data-t-aria="common.langLabel">
+        <button type="button" data-lang="en" aria-pressed="true" lang="en">EN</button>
+        <button type="button" data-lang="nl" aria-pressed="false" lang="nl">NL</button>
+      </div>
+    </nav>
+  </header>
+</div>
+
+<main id="main">
+  <section class="page-head on-yellow" aria-labelledby="page-title">
+    <div class="wrap head-body">
+      <div class="head-copy">
+        <!-- Remove the .rollout line once the marketplace is open to everyone. -->
+        <p class="rollout" data-t="common.rollout">Rolling out across the Netherlands</p>
+        <h1 id="page-title" data-t="booking.title1">How booking, payments and cancellations work</h1>
+        <p class="lead" data-t="booking.lead">Everything from finding a pro to the review afterwards, with no small print.</p>
+      </div>
+      <img class="mascot" src="/assets/site/img/kitten-lying.webp" width="520" height="364" alt="">
+    </div>
+  </section>
+
+  <section class="section wrap" aria-labelledby="find-title">
+    <div class="prose">
+      <h2 id="find-title" data-t="booking.findTitle">1. Find the right pro</h2>
+      <p data-t="booking.find1">Search for a service near you, then browse on a list or a map: dog walking, pet sitting, boarding, doggy day care, cat sitting or puppy visits.</p>
+      <p data-t="booking.find2"><strong>Best match</strong> sorts services by their reviews, how close they are, how quickly the pro answers requests and how many bookings they've completed. New pros get a small boost in their first month. No one can pay to appear higher.</p>
+    </div>
+    <div class="badges">
+      <div class="card badge-card"><h3 data-t="badge.rated">Highly rated</h3><p data-t="badge.ratedInfo">Rated 4.7 or more, from at least 5 reviews.</p></div>
+      <div class="card badge-card"><h3 data-t="badge.reliable">Reliable</h3><p data-t="badge.reliableInfo">No cancellations or no-shows by the pro in the last 90 days, and at least 5 completed bookings.</p></div>
+      <div class="card badge-card"><h3 data-t="badge.experienced">Experienced</h3><p data-t="badge.experiencedInfo">3 or more years' experience, or at least 20 completed bookings on Zoovo.</p></div>
+      <div class="card badge-card"><h3 data-t="badge.id">ID verified</h3><p data-t="badge.idInfo">Identity checked by Stripe, our payment partner.</p></div>
+    </div>
+    <div class="prose">
+      <p data-t="booking.find3">Badges are given automatically, from real bookings and reviews. Pros can't buy them. A pro shows NEW until they have 3 reviews.</p>
+    </div>
+  </section>
+
+  <section class="section section-tight wrap" aria-labelledby="pay-title">
+    <div class="prose">
+      <h2 id="pay-title" data-t="booking.payTitle">2. Book and pay</h2>
+      <p data-t="booking.pay1">Pick a time and pay in the app with card, iDEAL or Apple Pay. The price you see is the price you pay.</p>
+      <p data-t="booking.pay2">Payments are handled by Stripe, our payment partner, so your card details go straight to Stripe. The pro is only paid 48 hours after the booking ends.</p>
+    </div>
+  </section>
+
+  <section class="section section-tight wrap" aria-labelledby="cancel-title">
+    <div class="prose">
+      <h2 id="cancel-title" data-t="booking.cancelTitle">3. Cancelling</h2>
+      <p data-t="booking.cancel1">Every service has one of three cancellation policies, shown before you book. Once you've booked, the app shows the exact date and time your free cancellation ends.</p>
+    </div>
+    <div class="table-box">
+      <table>
+        <caption class="visually-hidden" data-t="booking.tableCaption">Cancellation policies</caption>
+        <thead>
+          <tr><th scope="col" data-t="booking.colPolicy">Policy</th><th scope="col" data-t="booking.colFree">Free cancellation until</th><th scope="col" data-t="booking.colLate">If you cancel later</th></tr>
+        </thead>
+        <tbody>
+          <tr><th scope="row" data-t="policy.flexible">Flexible</th><td data-t="policy.flexibleFree">24 hours before the start</td><td data-t="policy.half">You get 50% back</td></tr>
+          <tr><th scope="row" data-t="policy.moderate">Moderate</th><td data-t="policy.moderateFree">3 days before the start</td><td data-t="policy.half2">You get 50% back</td></tr>
+          <tr><th scope="row" data-t="policy.strict">Strict</th><td data-t="policy.strictFree">7 days before the start</td><td data-t="policy.none">No refund</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="prose">
+      <ul>
+        <li data-t="booking.cancel2">Refunds go back to the way you paid and usually take a few days.</li>
+        <li data-t="booking.cancel3">If the pro cancels, you get a full refund.</li>
+        <li data-t="booking.cancel4">If someone books the same time just before your payment comes through, you get a full refund automatically.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="section section-tight wrap" aria-labelledby="problem-title">
+    <div class="prose">
+      <h2 id="problem-title" data-t="booking.problemTitle">4. If something goes wrong</h2>
+      <p data-t="booking.problem1">You can report a problem from the start of the booking until 48 hours after it ends, straight from the booking in the app.</p>
+      <p data-t="booking.problem2">We hold the pro's payout while our team looks into it, and we'll get back to you. That's why pros are paid 48 hours after a booking ends: there's time to sort things out first.</p>
+    </div>
+  </section>
+
+  <section class="section section-tight wrap" aria-labelledby="reviews-title">
+    <div class="prose">
+      <h2 id="reviews-title" data-t="booking.reviewsTitle">5. Review each other</h2>
+      <p data-t="booking.reviews1">After the booking, you and the pro can review each other. A review shows once you've both written one, or after 14 days, so nobody writes in reply to the other.</p>
+      <p data-t="booking.reviews2">Reviews of pros are public and marked <strong>Booked and paid on Zoovo</strong>. Pros can answer each review with one public reply.</p>
+      <p data-t="booking.reviews3">What a pro writes about you is only visible to you and that pro. Other pros only see your average rating.</p>
+    </div>
+  </section>
+
+  <section class="cta on-yellow" aria-labelledby="cta-title">
+    <div class="inner">
+      <img class="bird" src="/assets/site/img/bird.webp" width="420" height="363" loading="lazy" alt="">
+      <div>
+        <h2 class="h2" id="cta-title" data-t="common.ctaTitle">Come say hi.</h2>
+        <p data-t="common.ctaText">Zoovo is free on the App Store.</p>
+      </div>
+      <a class="store-badge" href="https://apps.apple.com/app/id6778077059"><img src="/assets/site/img/app-store-badge.svg" width="120" height="40" loading="lazy" alt="Download on the App Store" data-t-alt="common.storeAlt"></a>
+    </div>
+  </section>
+</main>
+
+<footer class="site-foot">
+  <div class="wrap inner">
+    <img src="/assets/site/img/logo-white.webp" width="600" height="179" loading="lazy" alt="Zoovo">
+    <ul>
+      <li><a href="/privacy/" data-t="common.privacy">Privacy</a></li>
+      <li><a href="/terms/" data-t="common.terms">Terms</a></li>
+      <li><a href="/report-bug/" data-t="common.bug">Report a bug</a></li>
+      <li><a href="mailto:info@zoovo.eu">info@zoovo.eu</a></li>
+    </ul>
+    <p class="legal" data-t="common.legal">Zoovo B.V., made in the Netherlands</p>
+  </div>
+</footer>
+<script src="/assets/site/nl.js" defer></script>
+<script src="/assets/site/site.js" defer></script>
+</body>
+</html>

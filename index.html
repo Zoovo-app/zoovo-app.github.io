@@ -1,26 +1,159 @@
-<!doctype html><html lang="en"><head>
-<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Zoovo — Zoovo</title><style>
-:root{--navy:#0D3B66;--coral:#F95738;--ink:#1c2b3a;--muted:#5b6b7b}
-*{box-sizing:border-box}
-body{margin:0;background:#fafbfc;color:var(--ink);font:16px/1.6 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif}
-.wrap{max-width:760px;margin:0 auto;padding:32px 20px 80px}
-header{background:linear-gradient(180deg,#0D213B,#0D3B65);color:#fff;padding:28px 20px}
-header .wrap{padding:0;max-width:760px}
-header a{color:#fff;text-decoration:none;font-weight:700;letter-spacing:2px}
-h1{color:var(--navy);font-size:28px;margin:8px 0 4px}
-h2{color:var(--navy);font-size:20px;margin:32px 0 8px;border-top:1px solid #e8edf2;padding-top:20px}
-h3{color:var(--navy);font-size:16px;margin:20px 0 6px}
-a{color:var(--coral)}
-strong{color:var(--navy)}
-ul{padding-left:22px}
-li{margin:4px 0}
-.muted{color:var(--muted);font-size:13px}
-footer{color:var(--muted);font-size:13px;margin-top:48px;border-top:1px solid #e8edf2;padding-top:16px}
-</style></head>
-<body><header><div class="wrap"><a href="/">ZOOVO</a></div></header>
-<main class="wrap"><h1>Zoovo</h1><p>A social network for pets and their people.</p>
-<ul><li><a href="/privacy">Privacy Policy</a></li><li><a href="/terms">Terms of Service</a></li></ul>
-<p class="muted">Support: <a href="mailto:info@zoovo.eu">info@zoovo.eu</a></p>
-<footer>Zoovo B.V. (Netherlands) · <a href="mailto:info@zoovo.eu">info@zoovo.eu</a> · <a href="/privacy">Privacy</a> · <a href="/terms">Terms</a></footer>
-</main></body></html>
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; font-src 'self'; base-uri 'none'; form-action 'none'; object-src 'none'">
+<title>Zoovo · Your pet's whole world, nearby</title>
+<meta name="description" content="Meet local pet parents, plan playdates, share every moment and book trusted local pet care. The pet app made in the Netherlands, in English and Dutch.">
+<link rel="canonical" href="https://zoovo-app.github.io/">
+<meta name="apple-itunes-app" content="app-id=6778077059">
+<meta name="theme-color" content="#FCDA4D">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Zoovo">
+<meta property="og:title" content="Zoovo · Your pet's whole world, nearby">
+<meta property="og:description" content="Meet local pet parents, plan playdates, share every moment and book trusted local pet care.">
+<meta property="og:url" content="https://zoovo-app.github.io/">
+<meta property="og:image" content="https://zoovo-app.github.io/assets/site/img/og-image.jpg">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" href="/favicon.ico" sizes="32x32">
+<link rel="icon" href="/assets/site/img/favicon-48.png" type="image/png">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="preload" href="/assets/site/fonts/lato-latin-900-normal.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="/assets/site/site.css">
+<script src="/assets/site/lang.js"></script>
+</head>
+<body data-page="home">
+<a class="skip" href="#main" data-t="common.skip">Skip to content</a>
+
+<div class="hero on-yellow">
+  <header class="site-head wrap">
+    <nav class="nav" aria-label="Main" data-t-aria="common.navLabel">
+      <a class="brand" href="/"><img src="/assets/site/img/logo-navy.webp" width="600" height="179" alt="Zoovo home" data-t-alt="common.home"></a>
+      <ul class="nav-links">
+        <li><a href="/pros/" data-t="common.navPros">For pros</a></li>
+        <li><a href="/booking/" data-t="common.navBooking">Booking</a></li>
+        <li><a href="/safety/" data-t="common.navSafety">Safety</a></li>
+        <li><a href="/faq/" data-t="common.navFaq">FAQ</a></li>
+      </ul>
+      <div class="lang" role="group" aria-label="Language" data-t-aria="common.langLabel">
+        <button type="button" data-lang="en" aria-pressed="true" lang="en">EN</button>
+        <button type="button" data-lang="nl" aria-pressed="false" lang="nl">NL</button>
+      </div>
+    </nav>
+  </header>
+</div>
+
+  <main id="main">
+    <section class="hero on-yellow" aria-labelledby="hero-title">
+      <div class="hero-copy">
+        <h1 id="hero-title" data-t="home.heroTitle">Your pet's whole world, nearby.</h1>
+        <p class="lead" data-t="home.heroLead">Meet local pet parents, plan playdates, share every moment, and book trusted care when you need a hand.</p>
+        <div class="store">
+          <a class="store-badge" href="https://apps.apple.com/app/id6778077059"><img src="/assets/site/img/app-store-badge.svg" width="120" height="40" alt="Download on the App Store" data-t-alt="common.storeAlt"></a>
+          <p class="store-note" data-t="common.storeNote">Free on iPhone, in English and Nederlands. Android isn't available yet.</p>
+        </div>
+      </div>
+      <img class="hero-art" src="/assets/site/img/hero-hill-1200.webp" srcset="/assets/site/img/hero-hill-800.webp 800w, /assets/site/img/hero-hill-1200.webp 1200w, /assets/site/img/hero-hill-2000.webp 2000w" sizes="100vw" width="2000" height="857" alt="" fetchpriority="high">
+    </section>
+
+    <section class="band" aria-labelledby="community-title">
+      <div class="wrap community">
+        <div class="screens">
+          <img src="/assets/site/img/screen-feed.webp" width="484" height="1031" loading="lazy" alt="The Zoovo feed, showing a post about Theo the Maltese shih tzu" data-t-alt="home.shotFeedAlt">
+          <img src="/assets/site/img/screen-playdates.webp" width="484" height="1031" loading="lazy" alt="A playdate in Wilhelminapark, Utrecht, in the Zoovo app" data-t-alt="home.shotPlaydateAlt">
+        </div>
+        <div>
+          <p class="eyebrow" data-t="home.communityEyebrow">The community</p>
+          <h2 class="h2" id="community-title" data-t="home.communityTitle">Your pet's next best friend is nearby.</h2>
+          <ul class="ticks">
+            <li data-t="home.tickZoovs"><strong>Share Zoovs.</strong> Photos, videos and everyday moments, in one feed.</li>
+            <li data-t="home.tickPlaydates"><strong>Plan playdates</strong> in seconds and see who's coming.</li>
+            <li data-t="home.tickProfiles"><strong>A profile for every pet,</strong> plus messages and pet-friendly places.</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section class="section wrap" aria-labelledby="care-title">
+      <div class="intro">
+        <div>
+          <!-- Remove the .rollout line once the marketplace is open to everyone. -->
+          <p class="rollout" data-t="common.rollout">Rolling out across the Netherlands</p>
+          <h2 class="h2" id="care-title" data-t="home.careTitle">Trusted local care, booked in a few taps.</h2>
+          <p class="lead" data-t="home.careLead">Dog walking, pet sitting, boarding, doggy day care, cat sitting and puppy visits. Find a pro near you on a list or a map.</p>
+        </div>
+        <img src="/assets/site/img/cat-sitting.webp" width="400" height="623" loading="lazy" alt="" class="care-cat rim">
+      </div>
+      <ol class="steps">
+        <li class="card"><h3 class="h3" data-t="home.step1Title">Find</h3><p data-t="home.step1">Compare pros nearby. Badges show who's Highly rated, Reliable, Experienced and ID verified.</p></li>
+        <li class="card"><h3 class="h3" data-t="home.step2Title">Book and pay</h3><p data-t="home.step2">Pick a time and pay in the app with card, iDEAL or Apple Pay, securely through Stripe.</p></li>
+        <li class="card"><h3 class="h3" data-t="home.step3Title">Change of plans?</h3><p data-t="home.step3">You see the exact date and time your free cancellation ends. After that, the service's policy decides the refund.</p></li>
+        <li class="card"><h3 class="h3" data-t="home.step4Title">Review</h3><p data-t="home.step4">After the booking you review each other. Reviews show once you've both written one, or after 14 days.</p></li>
+      </ol>
+      <p class="more"><a href="/booking/" data-t="home.careMore">How booking, payments and cancellations work</a></p>
+    </section>
+
+    <section class="section section-tight wrap" aria-labelledby="safety-title">
+      <h2 class="h2" id="safety-title" data-t="home.safetyTitle">Safe for pets, fair for people</h2>
+      <div class="features">
+        <div><img class="paw" src="/assets/site/img/paw-bubble.webp" width="200" height="171" loading="lazy" alt=""><h3 class="h3" data-t="home.safe1Title">ID checked by Stripe</h3><p data-t="home.safe1">Every pro is 18 or older and has their identity checked by Stripe, our payment partner.</p></div>
+        <div><img class="paw" src="/assets/site/img/paw-bubble.webp" width="200" height="171" loading="lazy" alt=""><h3 class="h3" data-t="home.safe2Title">Checked by our team</h3><p data-t="home.safe2">Every service, with its photos and videos, is checked by the Zoovo team before it goes live.</p></div>
+        <div><img class="paw" src="/assets/site/img/paw-bubble.webp" width="200" height="171" loading="lazy" alt=""><h3 class="h3" data-t="home.safe3Title">Honest reviews</h3><p data-t="home.safe3">Only real, paid bookings can be reviewed. Reviews stay hidden until both sides have written one, so nobody writes in reply.</p></div>
+        <div><img class="paw" src="/assets/site/img/paw-bubble.webp" width="200" height="171" loading="lazy" alt=""><h3 class="h3" data-t="home.safe4Title">Help within 48 hours</h3><p data-t="home.safe4">Something went wrong? Report it from the start of the booking until 48 hours after it ends, and our team steps in.</p></div>
+      </div>
+      <p class="more"><a href="/safety/" data-t="home.safetyMore">How we keep Zoovo safe</a></p>
+    </section>
+
+    <section class="band pros-band" aria-labelledby="pros-title">
+      <img class="kitten rim" src="/assets/site/img/kitten-lying.webp" width="520" height="364" loading="lazy" alt="">
+      <div class="wrap inner">
+        <div>
+          <p class="eyebrow" data-t="common.forPros">For pros</p>
+          <h2 class="h2" id="pros-title" data-t="home.prosTitle">Walk dogs. Sit cats. Get paid.</h2>
+          <p data-t="home.prosLead">Become a service provider: one dashboard for your bookings, earnings and stats, and payouts to your own bank 48 hours after each booking.</p>
+        </div>
+        <a class="btn btn-coral" href="/pros/" data-t="home.prosCta">Zoovo for pros</a>
+      </div>
+    </section>
+
+    <section class="section wrap" aria-labelledby="faq-title">
+      <h2 class="h2" id="faq-title" data-t="home.faqTitle">Questions?</h2>
+      <div class="faq-teaser">
+        <details><summary data-t="faq.costQ">How much does Zoovo cost?</summary><div class="answer"><p data-t="faq.costA">The app is free. You only pay for services you book, and you see the full price before you do.</p></div></details>
+        <details><summary data-t="faq.androidQ">Is Zoovo on Android?</summary><div class="answer"><p data-t="faq.androidA">Not yet. Zoovo is available for iPhone on the App Store.</p></div></details>
+        <details><summary data-t="faq.whereQ">Where can I book services?</summary><div class="answer"><p data-t="faq.whereA">Services are rolling out across the Netherlands. Open the app to see the pros near you.</p></div></details>
+      </div>
+      <p class="more"><a href="/faq/" data-t="home.faqMore">All questions and answers</a></p>
+    </section>
+
+    <section class="cta on-yellow" aria-labelledby="cta-title">
+      <div class="inner">
+        <img class="bird" src="/assets/site/img/bird.webp" width="420" height="363" loading="lazy" alt="">
+        <div>
+          <h2 class="h2" id="cta-title" data-t="common.ctaTitle">Come say hi.</h2>
+          <p data-t="common.ctaText">Zoovo is free on the App Store.</p>
+        </div>
+        <a class="store-badge" href="https://apps.apple.com/app/id6778077059"><img src="/assets/site/img/app-store-badge.svg" width="120" height="40" loading="lazy" alt="Download on the App Store" data-t-alt="common.storeAlt"></a>
+      </div>
+    </section>
+  </main>
+
+<footer class="site-foot">
+  <div class="wrap inner">
+    <img src="/assets/site/img/logo-white.webp" width="600" height="179" loading="lazy" alt="Zoovo">
+    <ul>
+      <li><a href="/privacy/" data-t="common.privacy">Privacy</a></li>
+      <li><a href="/terms/" data-t="common.terms">Terms</a></li>
+      <li><a href="/report-bug/" data-t="common.bug">Report a bug</a></li>
+      <li><a href="mailto:info@zoovo.eu">info@zoovo.eu</a></li>
+    </ul>
+    <p class="legal" data-t="common.legal">Zoovo B.V., made in the Netherlands</p>
+  </div>
+</footer>
+<script src="/assets/site/nl.js" defer></script>
+<script src="/assets/site/site.js" defer></script>
+</body>
+</html>
