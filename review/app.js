@@ -11,9 +11,9 @@ import {
   reverseConfirmText, reverseLabel, saveErrorText, savedText, sortPros, stateText, strayPaymentNotes,
   strayPayments, stripeTypeNote, suggestedRefund, transferLabel, validateDecision, validateNote,
   verificationBadges, waitedFor, waitingTexts, whenLabel,
-  TAKE_DOWN_NOTIFIED, handleArgs, handleConfirmText, handleErrorText, handleRefusalIsStale, handledText,
-  reportActionHint, reportActionLabel, reportActions, reportFromLine, reportList, reportRowText,
-  reportHidden, reportNoticeShown, reportTargetState, reportWaiting, validateHandling,
+  NOT_CONFIRMED, TAKE_DOWN_NOTIFIED, handleArgs, handleConfirmText, handleErrorText, handleRefusalIsStale,
+  handledText, handlingProblem, reportActionHint, reportActionLabel, reportActions, reportFromLine, reportHidden,
+  reportList, reportNoticeShown, reportReviewTitle, reportRowText, reportTargetState, reportWaiting,
 } from '/review/lib.js';
 
 // Applicants choose their avatar URL (the database only checks for https), so
@@ -1669,23 +1669,20 @@ function reportTargetPane(item) {
   const comment = text(t.comment);
   const reply = text(t.reply);
   const hidden = (label) => el('span', { className: 'tag warn', textContent: label });
-  // The server sends one flag per kind of report (`hidden` for a review, `reply_hidden` for a reply): the one
-  // this report is about is shown, on the review or on the reply.
-  const flagged = reportHidden(item);
-  const reviewHidden = flagged && item.target_type === 'review';
-  const replyHidden = flagged && item.target_type === 'review_reply';
+  // The server sends both flags, whatever the report is about: each part shows its own real state, the review
+  // hidden, the reply hidden, or both.
+  const state = reportHidden(item);
   return pane('THE REVIEW AND ITS REPLY',
-    el('span', {}, el('b', { textContent: text(t.author_first_name) ?? 'A former member' }), reviewHidden ? ' ' : null,
-      reviewHidden ? hidden('review hidden by the team') : null),
+    el('span', {}, el('b', { textContent: reportReviewTitle(item) }), state.review ? ' ' : null,
+      state.review ? hidden('review hidden by the team') : null),
     comment ? el('span', { className: 'quote', textContent: `“${comment}”` }) : none('No comment.'),
     reply
       ? el('div', { className: 'box reply' }, el('b', { textContent: `Reply from ${text(t.pro_display_name) ?? 'the pro'}` }),
-        `: “${reply}”`, replyHidden ? ' ' : null, replyHidden ? hidden('reply hidden by the team') : null)
+        `: “${reply}”`, state.reply ? ' ' : null, state.reply ? hidden('reply hidden by the team') : null)
       : none('No reply.'));
 }
 
 function reportCard(item) {
-  const id = item.id;
   const text = reportRowText(item);
   const waiting = reportWaiting(item, Date.now());
   const t = objectOf(item.target);
@@ -1701,16 +1698,15 @@ function reportCard(item) {
     el('div', { className: 'cols' },
       reportTargetPane(item),
       pane('THE REPORT',
-        el('span', {}, el('b', { textContent: `${text.reason}.` })),
+        el('span', {}, el('b', { textContent: `${text.fullReason}.` })), // the list cuts a long reason; the card keeps it
         text.reported ? `As reported: ${text.reported}` : none('No text as reported.'),
         el('span', { className: 'muted', textContent: reportFromLine(item) }))),
     reportDecision(item));
-  article.dataset.reportId = id;
   return article;
 }
 
-// The decision: one note, and an action for each thing the team can do. A take-down has its own box with the
-// reason the pro reads; the server keeps that text as the note too, so the note above is not used for it.
+// The decision: the team's note, and an action for each thing the team can do. A take-down has its own box with
+// the reason the pro reads, apart from the note: both are required, and the server keeps them separate.
 function reportDecision(item) {
   const id = item.id;
   const actions = reportActions(item);
@@ -1732,15 +1728,13 @@ function reportDecision(item) {
   const hint = (action) => el('span', { className: 'hint', textContent: reportActionHint(item, action) });
   const button = (action, className) => {
     const b = el('button', { type: 'button', className: `btn ${className}`, textContent: reportActionLabel(action), disabled: busy });
-    b.onclick = () => decideReport(item, action, b, action === 'take_down' ? reason : note, formError, saving);
+    b.onclick = () => decideReport(item, action, b, note, reason, formError, saving);
     return b;
   };
 
   const box = el('div', { className: 'actions sep' },
     el('span', { className: 'decision-title', textContent: 'Decision' }),
     el('label', {}, 'Note (required, saved with the decision; only the team sees it)', note),
-    actions.includes('take_down')
-      ? el('span', { className: 'muted', textContent: 'For a take-down, the reason for the pro below is saved as the note instead.' }) : null,
     formError);
   for (const action of actions) {
     if (action === 'dismiss') box.append(optionRow('', button(action, 'outline'), hint(action)));
@@ -1754,21 +1748,22 @@ function reportDecision(item) {
   return box;
 }
 
-// Checks the text, asks, and sends the action once. The card locks first (act), so a second click can't send a
-// second request, and it stays locked until the answer is in. `field` holds the text sent as the note: the note
-// for most actions, the reason for the pro for a take-down.
-function decideReport(item, action, button, field, formError, saving) {
+// Checks the texts, asks, and sends the action once. The card locks first (act), so a second click can't send a
+// second request, and it stays locked until the answer is in. `note` is the team's note, sent with every action;
+// `reason` is what the pro reads, sent with a take-down only. The question names the other open reports that
+// are closed with it, from the list on screen.
+function decideReport(item, action, button, note, reason, formError, saving) {
   const id = item.id;
   if (requests.isBusy(id)) return;
-  const problem = validateHandling(item, action, field.value);
+  const problem = handlingProblem(item, action, note.value, reason.value);
   if (problem) {
-    formError.textContent = problem;
-    field.focus();
+    formError.textContent = problem.text;
+    (problem.field === 'reason' ? reason : note).focus();
     return;
   }
   formError.textContent = '';
-  if (!confirm(handleConfirmText(item, action, field.value))) return;
-  const args = handleArgs(item, action, field.value); // validateHandling passed; never send a guess
+  if (!confirm(handleConfirmText(item, action, reason.value, { rows, total: reportTotal }))) return;
+  const args = handleArgs(item, action, note.value, reason.value); // handlingProblem passed; never send a guess
   if (!args) {
     formError.textContent = 'Couldn’t send: this report can’t be handled from here.';
     return;
@@ -1805,7 +1800,7 @@ async function finishReportAction(item, action, token, { data, error }) {
   if (said) reportDrafts.delete(id);
   if (!here) return load();
   reportNotice = said ? { kind: 'ok', text: said }
-    : { kind: 'warn', text: 'The server answered, but not with the report that was sent.', reloads: true };
+    : { kind: 'warn', text: NOT_CONFIRMED, reloads: true };
   keepNotice = true;
   return load();
 }

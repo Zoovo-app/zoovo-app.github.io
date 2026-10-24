@@ -19,7 +19,8 @@ import {
   markHandledConfirmText, markedHandledText, markHandledErrorText, reportList, reportRowText, reportWaiting,
   reportActions, reportTargetState, reportActionLabel, reportActionHint, validateHandling, handleArgs,
   handleConfirmText, handledText, handleErrorText, handleRefusalIsStale, TAKE_DOWN_NOTIFIED, reportFromLine,
-  reportHidden, reportNoticeShown, LIST_RELOADED,
+  reportHidden, reportNoticeShown, LIST_RELOADED, otherOpenReports, reportReviewTitle, handlingProblem,
+  NOT_CONFIRMED,
 } from './lib.js';
 
 // verification as admin_list_pro_applications and admin_list_pros return it:
@@ -1543,25 +1544,33 @@ test('a_pending_payouts_retry_says_it_looks_first', () => {
 // ---- The Reports tab (admin_list_reports and admin_handle_report) -----------------------------------------------
 
 const BRAM = 'Bram’s Dog Care';
-// The items as admin_list_reports serves them (Task 4's report: report_admin_json).
+// The items as admin_list_reports serves them (report_admin_json, with the final fix wave's contract: a review
+// or reply target has `direction`, `subject_first_name` and both `hidden` and `reply_hidden`).
 const serviceReport = (over = {}) => ({
   id: 'rep-s1', target_type: 'service', reason: 'welfare', created_at: '2026-10-21T12:10:00+00:00',
   reporter: { first_name: 'Noor' },
   target: { id: 'svc-1', title: 'Dog walking, 45 min', status: 'live', pro_display_name: BRAM },
   target_text: 'Dog walking, 45 min', earlier_reports: 0, handled: null, ...over,
 });
+// A pet parent's review of a pro (the subject is the pro, whose first name the page doesn't use).
 const reviewTarget = (over = {}) => ({
   id: 'rev-1', comment: 'Rude and useless. Never again.', reply: 'Maybe train your dog before you complain.',
-  author_first_name: 'Iris', pro_display_name: BRAM, ...over,
+  author_first_name: 'Iris', pro_display_name: BRAM, direction: 'customer_to_pro', subject_first_name: 'Bram',
+  hidden: false, reply_hidden: false, ...over,
+});
+// A pro's review of a pet parent: written by the pro, about Iris; it never has a reply.
+const proReviewTarget = (over = {}) => reviewTarget({
+  id: 'rev-2', comment: 'Late twice, and rude to the walker.', reply: null, author_first_name: 'Bram',
+  direction: 'pro_to_customer', subject_first_name: 'Iris', ...over,
 });
 const reviewReport = (over = {}) => ({
   id: 'rep-r1', target_type: 'review', reason: 'Harassment or bullying', created_at: '2026-10-22T12:10:00+00:00',
-  reporter: { first_name: 'Bram' }, target: reviewTarget({ hidden: false }),
+  reporter: { first_name: 'Bram' }, target: reviewTarget(),
   target_text: 'Rude and useless. Never again.', earlier_reports: 1, handled: null, ...over,
 });
 const replyReport = (over = {}) => ({
   id: 'rep-p1', target_type: 'review_reply', reason: 'Inappropriate content', created_at: '2026-10-23T06:10:00+00:00',
-  reporter: { first_name: 'Iris' }, target: reviewTarget({ reply_hidden: false }),
+  reporter: { first_name: 'Iris' }, target: reviewTarget(),
   target_text: 'Maybe train your dog before you complain.', earlier_reports: 0, handled: null, ...over,
 });
 const REPORT_NOW = Date.parse('2026-10-23T12:10:00Z');
@@ -1569,16 +1578,19 @@ const REPORT_NOW = Date.parse('2026-10-23T12:10:00Z');
 test('report_row_text_per_target', () => {
   assert.deepEqual(reportRowText(serviceReport()), {
     id: 'rep-s1', kind: 'SERVICE', tag: 'service report', by: 'Noor', reason: 'Animal welfare concern',
+    fullReason: 'Animal welfare concern',
     heading: 'Animal welfare concern · Dog walking, 45 min',
     what: 'Dog walking, 45 min · Bram’s Dog Care', reported: '“Dog walking, 45 min”',
   });
   assert.deepEqual(reportRowText(reviewReport()), {
     id: 'rep-r1', kind: 'REVIEW', tag: 'review report', by: 'Bram', reason: 'Harassment or bullying',
+    fullReason: 'Harassment or bullying',
     heading: 'Harassment or bullying · Review by Iris',
     what: 'By Iris · Bram’s Dog Care', reported: '“Rude and useless. Never again.”',
   });
   assert.deepEqual(reportRowText(replyReport()), {
     id: 'rep-p1', kind: 'REPLY', tag: 'reply report', by: 'Iris', reason: 'Inappropriate content',
+    fullReason: 'Inappropriate content',
     heading: 'Inappropriate content · Reply from Bram’s Dog Care',
     what: 'Bram’s Dog Care, under Iris’s review', reported: '“Maybe train your dog before you complain.”',
   });
@@ -1641,6 +1653,73 @@ test('report_reasons_in_words', () => {
   // Not a label just because every object has the key.
   assert.equal(reasonOf('constructor'), 'constructor');
   assert.equal(reasonOf('__proto__'), '__proto__');
+});
+
+test('a_long_reason_is_cut_in_the_list_and_whole_in_the_card', () => {
+  // The review and reply sheets send "Other: <the reporter's note>", up to 1000 characters.
+  const note = 'Other: ' + 'She shouted at the dogs and then at me. '.repeat(25).trim();
+  assert.ok(note.length > 900);
+  const row = reportRowText(reviewReport({ reason: note }));
+  // The row, the heading and (through `reason`) the aria-label get around 80 characters and an ellipsis...
+  // (the 80th character here is a space, which is not left in front of the ellipsis)
+  const cut = 'Other: She shouted at the dogs and then at me. She shouted at the dogs and then…';
+  assert.equal(note.slice(0, 80), `${cut.slice(0, -1)} `);
+  assert.equal(row.reason, cut);
+  assert.equal(row.heading, `${cut} · Review by Iris`);
+  assert.ok([...row.reason].length <= 81);
+  // ...and the card keeps all of it.
+  assert.equal(row.fullReason, note);
+  // Code points, not UTF-16 units: an emoji is never cut in half.
+  const dogs = reportRowText(reviewReport({ reason: '🐕'.repeat(200) }));
+  assert.equal(dogs.reason, `${'🐕'.repeat(80)}…`);
+  assert.equal(dogs.fullReason, '🐕'.repeat(200));
+  // Cut where a space would be left before the ellipsis: no "word …".
+  const spaced = reportRowText(reviewReport({ reason: `${'a'.repeat(79)} ${'b'.repeat(40)}` }));
+  assert.equal(spaced.reason, `${'a'.repeat(79)}…`);
+  // A reason that fits is left as it is: 80 characters exactly, and the short ones.
+  const exact = 'x'.repeat(80);
+  assert.equal(reportRowText(reviewReport({ reason: exact })).reason, exact);
+  assert.equal(reportRowText(reviewReport({ reason: `${exact}y` })).reason, `${exact}…`);
+  assert.equal(reportRowText(reviewReport({ reason: 'Hate speech' })).reason, 'Hate speech');
+  assert.equal(reportRowText(serviceReport({ reason: 'welfare' })).reason, 'Animal welfare concern');
+  // No reason keeps its words in both.
+  assert.equal(reportRowText(serviceReport({ reason: null })).fullReason, 'No reason given');
+});
+
+test('review_rows_follow_the_direction', () => {
+  const row = (over, report = reviewReport) => reportRowText(report({ target: reviewTarget(over) }));
+  // A pet parent's review of a pro: today's row.
+  assert.equal(row({}).what, 'By Iris · Bram’s Dog Care');
+  assert.equal(row({}).heading, 'Harassment or bullying · Review by Iris');
+  // A pro's review of a pet parent: about Iris (the subject), by the pro's business.
+  const pro = (over = {}) => row({ ...proReviewTarget(), ...over });
+  assert.equal(pro().what, 'A review of Iris by Bram’s Dog Care');
+  assert.equal(pro().heading, 'Harassment or bullying · Review of Iris');
+  assert.equal(pro({ subject_first_name: null }).what, 'A review of a former member by Bram’s Dog Care');
+  assert.equal(pro({ subject_first_name: null }).heading, 'Harassment or bullying · Review of a former member');
+  assert.equal(pro({ subject_first_name: '  ' }).what, 'A review of a former member by Bram’s Dog Care');
+  assert.equal(pro({ pro_display_name: null }).what, 'A review of Iris by the pro');
+  // No direction, or one the page doesn't know: the neutral row, which names no rating.
+  for (const direction of [undefined, null, '', 'sideways', 5, 'constructor']) {
+    assert.equal(row({ direction }).what, 'By Iris · Bram’s Dog Care', String(direction));
+    assert.equal(row({ direction }).heading, 'Harassment or bullying · Review by Iris', String(direction));
+  }
+  const { direction, subject_first_name, ...older } = reviewTarget();
+  assert.equal(reportRowText(reviewReport({ target: older })).what, 'By Iris · Bram’s Dog Care');
+  // A deleted review stays deleted, whatever its direction.
+  assert.equal(reportRowText(reviewReport({ target: null })).what, 'A deleted review');
+  // Only reviews read the direction: a reply row is the same.
+  assert.equal(row({ direction: 'pro_to_customer' }, replyReport).what, 'Bram’s Dog Care, under Iris’s review');
+  assert.equal(row({ direction: 'pro_to_customer' }, replyReport).heading, 'Inappropriate content · Reply from Bram’s Dog Care');
+  // The card's title for the review: the author, or for a pro's review who it is about and by whom.
+  assert.equal(reportReviewTitle(reviewReport()), 'Iris');
+  assert.equal(reportReviewTitle(reviewReport({ target: reviewTarget({ author_first_name: null }) })), 'A former member');
+  assert.equal(reportReviewTitle(reviewReport({ target: proReviewTarget() })), 'A review of Iris by Bram’s Dog Care');
+  assert.equal(reportReviewTitle(reviewReport({ target: proReviewTarget({ subject_first_name: null, pro_display_name: null }) })),
+    'A review of a former member by the pro');
+  assert.equal(reportReviewTitle(reviewReport({ target: reviewTarget({ direction: 'sideways' }) })), 'Iris');
+  assert.equal(reportReviewTitle(replyReport()), 'Iris');
+  assert.equal(reportReviewTitle(reviewReport({ target: null })), 'A former member');
 });
 
 test('report_list_parses_the_answer', () => {
@@ -1770,28 +1849,44 @@ test('report_target_state_says_why_only_dismiss_is_left', () => {
   }
 });
 
-test('report_hidden_reads_the_flag_of_its_own_target_type', () => {
-  // The server sends `hidden` only on a review report's target and `reply_hidden` only on a reply report's, so
-  // each report reads its own flag, never the other's.
-  assert.equal(reportHidden(reviewReport()), false);
-  assert.equal(reportHidden(reviewReport({ target: reviewTarget({ hidden: true }) })), true);
-  assert.equal(reportHidden(replyReport()), false);
-  assert.equal(reportHidden(replyReport({ target: reviewTarget({ reply_hidden: true }) })), true);
-  assert.equal(reportHidden(reviewReport({ target: reviewTarget({ reply_hidden: true }) })), false);
-  assert.equal(reportHidden(replyReport({ target: reviewTarget({ hidden: true }) })), false);
-  // No flag, no target, a service (it has a status instead) or something else: not hidden.
-  assert.equal(reportHidden(reviewReport({ target: reviewTarget() })), false);
-  assert.equal(reportHidden(reviewReport({ target: null })), false);
-  assert.equal(reportHidden(serviceReport({ target: { ...serviceReport().target, hidden: true, reply_hidden: true } })), false);
-  for (const bad of [null, undefined, 'x', {}, { id: 'x', target_type: 'user' }]) assert.equal(reportHidden(bad), false, JSON.stringify(bad));
+test('report_hidden_gives_the_real_state_of_the_review_and_of_its_reply', () => {
+  // The server sends both flags on a review's and on a reply's target: each says whether that part is hidden,
+  // whatever the report is about.
+  for (const make of [reviewReport, replyReport]) {
+    const state = (over) => reportHidden(make({ target: reviewTarget(over) }));
+    assert.deepEqual(state({}), { review: false, reply: false });
+    assert.deepEqual(state({ hidden: true }), { review: true, reply: false });
+    assert.deepEqual(state({ reply_hidden: true }), { review: false, reply: true });
+    assert.deepEqual(state({ hidden: true, reply_hidden: true }), { review: true, reply: true });
+    // Only `true` is hidden; a flag that is missing (an older server) or odd is not.
+    assert.deepEqual(state({ hidden: undefined, reply_hidden: undefined }), { review: false, reply: false });
+    for (const odd of ['true', 1, null, {}]) assert.deepEqual(state({ hidden: odd, reply_hidden: odd }), { review: false, reply: false }, String(odd));
+    assert.deepEqual(reportHidden(make({ target: null })), { review: false, reply: false });
+  }
+  // A service has a status, not these flags; something else, nothing.
+  assert.deepEqual(reportHidden(serviceReport({ target: { ...serviceReport().target, hidden: true, reply_hidden: true } })), { review: false, reply: false });
+  for (const bad of [null, undefined, 'x', {}, { id: 'x', target_type: 'user' }]) {
+    assert.deepEqual(reportHidden(bad), { review: false, reply: false }, JSON.stringify(bad));
+  }
 
-  // The action and the sentence follow the same flag.
+  // Hide review: only on a review report, and only while the review isn't hidden (the reply's state is its own).
   assert.deepEqual(reportActions(reviewReport({ target: reviewTarget({ reply_hidden: true }) })), ['dismiss', 'hide_review']);
+  assert.deepEqual(reportActions(reviewReport({ target: reviewTarget({ hidden: true }) })), ['dismiss']);
+  assert.deepEqual(reportActions(reviewReport({ target: reviewTarget({ hidden: true, reply_hidden: true }) })), ['dismiss']);
+  // Hide reply: only on a reply report with a reply that is there and not hidden (the review's state is its own).
   assert.deepEqual(reportActions(replyReport({ target: reviewTarget({ hidden: true }) })), ['dismiss', 'hide_reply']);
+  assert.deepEqual(reportActions(replyReport({ target: reviewTarget({ reply_hidden: true }) })), ['dismiss']);
+  assert.deepEqual(reportActions(replyReport({ target: reviewTarget({ hidden: true, reply_hidden: true }) })), ['dismiss']);
+  assert.deepEqual(reportActions(replyReport({ target: reviewTarget({ reply: null }) })), ['dismiss']);
+  assert.deepEqual(reportActions(serviceReport({ target: { ...serviceReport().target, hidden: true } })), ['dismiss', 'take_down']);
+
+  // The sentence for "only Dismiss is left" follows the same flags.
+  assert.equal(reportTargetState(reviewReport({ target: reviewTarget({ hidden: true, reply_hidden: true }) })),
+    'This review is hidden already, so the report can only be dismissed.');
   assert.equal(reportTargetState(reviewReport({ target: reviewTarget({ reply_hidden: true }) })), null);
   assert.equal(reportTargetState(replyReport({ target: reviewTarget({ hidden: true }) })), null);
-  assert.deepEqual(reportActions(reviewReport({ target: reviewTarget({ hidden: true, reply_hidden: false }) })), ['dismiss']);
-  assert.deepEqual(reportActions(replyReport({ target: reviewTarget({ hidden: false, reply_hidden: true }) })), ['dismiss']);
+  assert.equal(reportTargetState(replyReport({ target: reviewTarget({ hidden: true, reply_hidden: true }) })),
+    'This reply is hidden already, so the report can only be dismissed.');
 });
 
 test('report_action_words', () => {
@@ -1818,21 +1913,56 @@ test('report_action_words', () => {
   assert.equal(reportActionHint(replyReport(), 'hide_reply'),
     'Hides only the reply; the review stays. Only on a reply report. Needs the note.');
   assert.equal(reportActionHint(serviceReport(), 'delete'), '');
-  assert.equal(TAKE_DOWN_NOTIFIED, 'The pro gets a notification with your reason.');
+  // The in-app notice depends on the pro's settings (migration 120), so the words promise the reason on the
+  // service and a notification only when the pro's settings allow one.
+  assert.equal(TAKE_DOWN_NOTIFIED,
+    'The pro sees your reason on the service in the app, and gets a notification unless they turned those off.');
+});
+
+test('hide_review_hint_follows_the_direction', () => {
+  const hint = (over) => reportActionHint(reviewReport({ target: reviewTarget(over) }), 'hide_review');
+  // A pet parent's review of a pro: it is on the service page and counts in the pro's rating.
+  assert.equal(hint({}), 'Gone from the service page and from Bram’s Dog Care’s rating. Iris still sees it, marked hidden. Needs the note.');
+  // A pro's review of a pet parent: in the pet parent's rating, which pros see; on no service page.
+  assert.equal(hint(proReviewTarget()),
+    'Gone from Iris’s rating, which pros see. It is not on any service page. Needs the note.');
+  assert.equal(hint(proReviewTarget({ subject_first_name: null })),
+    'Gone from a former member’s rating, which pros see. It is not on any service page. Needs the note.');
+  // No direction, or one the page doesn't know: words that name no rating.
+  const { direction, ...older } = reviewTarget();
+  for (const target of [older, reviewTarget({ direction: null }), reviewTarget({ direction: 'sideways' }), reviewTarget({ direction: '' })]) {
+    const text = reportActionHint(reviewReport({ target }), 'hide_review');
+    assert.equal(text, 'Hidden wherever it is shown. Needs the note.');
+    assert.doesNotMatch(text, /rating|service page/);
+  }
+  // The other hints don't depend on it.
+  assert.equal(reportActionHint(reviewReport({ target: proReviewTarget() }), 'dismiss'), 'Nothing changes. Needs the note.');
+  assert.equal(reportActionHint(replyReport(), 'hide_reply'), 'Hides only the reply; the review stays. Only on a reply report. Needs the note.');
 });
 
 test('handle_args_build_the_rpc_call', () => {
-  // Exactly the three arguments of admin_handle_report, the note trimmed.
-  assert.deepEqual(handleArgs(serviceReport(), 'take_down', '  Too many dogs at once.\n'),
-    { p_report_id: 'rep-s1', p_action: 'take_down', p_note: 'Too many dogs at once.' });
+  // Exactly the four arguments of admin_handle_report. A take-down sends the team's note and, apart from it, the
+  // reason the pro reads; every other action sends p_reason null.
+  assert.deepEqual(
+    handleArgs(serviceReport(), 'take_down', '  Second welfare report this month.\n', '\n You walked too many dogs at once. '),
+    { p_report_id: 'rep-s1', p_action: 'take_down', p_note: 'Second welfare report this month.', p_reason: 'You walked too many dogs at once.' });
   assert.deepEqual(handleArgs(serviceReport(), 'dismiss', 'Asked the pro; groups are small.'),
-    { p_report_id: 'rep-s1', p_action: 'dismiss', p_note: 'Asked the pro; groups are small.' });
+    { p_report_id: 'rep-s1', p_action: 'dismiss', p_note: 'Asked the pro; groups are small.', p_reason: null });
+  assert.deepEqual(handleArgs(reviewReport(), 'dismiss', 'Looks fine to us.'),
+    { p_report_id: 'rep-r1', p_action: 'dismiss', p_note: 'Looks fine to us.', p_reason: null });
   assert.deepEqual(handleArgs(reviewReport(), 'hide_review', 'Abuse towards the pro.'),
-    { p_report_id: 'rep-r1', p_action: 'hide_review', p_note: 'Abuse towards the pro.' });
+    { p_report_id: 'rep-r1', p_action: 'hide_review', p_note: 'Abuse towards the pro.', p_reason: null });
   assert.deepEqual(handleArgs(replyReport(), 'hide_reply', 'Insults the customer.'),
-    { p_report_id: 'rep-p1', p_action: 'hide_reply', p_note: 'Insults the customer.' });
+    { p_report_id: 'rep-p1', p_action: 'hide_reply', p_note: 'Insults the customer.', p_reason: null });
+  assert.deepEqual(handleArgs(replyReport(), 'dismiss', 'Nothing wrong with it.'),
+    { p_report_id: 'rep-p1', p_action: 'dismiss', p_note: 'Nothing wrong with it.', p_reason: null });
+  // A reason typed for another action is never sent: the server refuses a reason there (invalid_input).
+  assert.equal(handleArgs(serviceReport(), 'dismiss', 'Asked the pro; groups are small.', 'A reason nobody asked for').p_reason, null);
+  assert.equal(handleArgs(reviewReport(), 'hide_review', 'Abuse towards the pro.', 'A reason nobody asked for').p_reason, null);
+  assert.equal(handleArgs(replyReport(), 'hide_reply', 'Insults the customer.', 'A reason nobody asked for').p_reason, null);
   // Whitespace inside is kept; at the ends, the server's own (space, tab, line breaks, form feed, vertical tab) goes.
   assert.equal(handleArgs(reviewReport(), 'dismiss', '\t\n a\n\nb c \f\v\r\n').p_note, 'a\n\nb c');
+  assert.equal(handleArgs(serviceReport(), 'take_down', 'A fine note.', '\t\n a\n\nb c \f\v\r\n').p_reason, 'a\n\nb c');
 
   // 5 to 1000 characters once trimmed, counted the way Postgres counts: characters, not UTF-16 units.
   assert.equal(handleArgs(reviewReport(), 'dismiss', '12345').p_note, '12345');
@@ -1848,16 +1978,29 @@ test('handle_args_build_the_rpc_call', () => {
   assert.equal(handleArgs(reviewReport(), 'dismiss', '🐕'.repeat(1001)), null);
   for (const bad of [null, undefined, 12345, {}, ['Too many dogs']]) assert.equal(handleArgs(reviewReport(), 'dismiss', bad), null, String(bad));
 
+  // A take-down needs both, each 5 to 1000 characters: nothing is sent when either is out of range.
+  const take = (note, reason) => handleArgs(serviceReport(), 'take_down', note, reason);
+  assert.deepEqual(take('12345', '67890'), { p_report_id: 'rep-s1', p_action: 'take_down', p_note: '12345', p_reason: '67890' });
+  assert.equal(take('x'.repeat(1000), 'y'.repeat(1000)).p_note.length, 1000);
+  assert.equal(take('x'.repeat(1000), 'y'.repeat(1000)).p_reason.length, 1000);
+  assert.equal(take('🐕'.repeat(1000), '🐈'.repeat(5)).p_reason, '🐈'.repeat(5));
+  for (const bad of ['1234', '  1234  ', '', '   ', 'x'.repeat(1001), '🐕'.repeat(1001), '🐕'.repeat(4), null, undefined, 12345, {}]) {
+    assert.equal(take(bad, 'A fine reason.'), null, `note ${String(bad)}`);
+    assert.equal(take('A fine note.', bad), null, `reason ${String(bad)}`);
+  }
+  assert.equal(take('A fine note.'), null); // no reason at all
+  assert.equal(take(), null);
+
   // Only an action this report offers is sent, and only for a report with an id.
   assert.equal(handleArgs(serviceReport(), 'hide_review', 'A fine note.'), null);
   assert.equal(handleArgs(serviceReport(), 'hide_reply', 'A fine note.'), null);
-  assert.equal(handleArgs(reviewReport(), 'take_down', 'A fine note.'), null);
+  assert.equal(handleArgs(reviewReport(), 'take_down', 'A fine note.', 'A fine reason.'), null);
   assert.equal(handleArgs(reviewReport(), 'hide_reply', 'A fine note.'), null);
   assert.equal(handleArgs(replyReport(), 'hide_review', 'A fine note.'), null);
-  assert.equal(handleArgs(replyReport(), 'take_down', 'A fine note.'), null);
+  assert.equal(handleArgs(replyReport(), 'take_down', 'A fine note.', 'A fine reason.'), null);
   assert.equal(handleArgs(serviceReport(), 'delete', 'A fine note.'), null);
   assert.equal(handleArgs(serviceReport(), undefined, 'A fine note.'), null);
-  assert.equal(handleArgs(serviceReport({ target: { ...serviceReport().target, status: 'removed' } }), 'take_down', 'A fine note.'), null);
+  assert.equal(handleArgs(serviceReport({ target: { ...serviceReport().target, status: 'removed' } }), 'take_down', 'A fine note.', 'A fine reason.'), null);
   assert.equal(handleArgs(serviceReport({ id: '' }), 'dismiss', 'A fine note.'), null);
   assert.equal(handleArgs(serviceReport({ id: undefined }), 'dismiss', 'A fine note.'), null);
   assert.equal(handleArgs(null, 'dismiss', 'A fine note.'), null);
@@ -1871,71 +2014,213 @@ test('validate_handling_says_what_is_wrong', () => {
   assert.equal(validateHandling(reviewReport(), 'dismiss', ''), validateNote(''));
   assert.equal(validateHandling(reviewReport(), 'dismiss', 'x'.repeat(1001)), validateNote('x'.repeat(1001)));
   assert.equal(validateHandling(reviewReport(), 'dismiss', null), validateNote(null));
-  // A take-down's text is the reason the pro reads, so it is called that.
-  assert.equal(validateHandling(serviceReport(), 'take_down', 'You walked too many dogs at once.'), null);
-  assert.equal(validateHandling(serviceReport(), 'take_down', '  hi  '),
-    'The reason for the pro is required: write at least 5 characters.');
-  assert.equal(validateHandling(serviceReport(), 'take_down', ''),
-    'The reason for the pro is required: write at least 5 characters.');
-  assert.equal(validateHandling(serviceReport(), 'take_down', 'x'.repeat(1001)),
-    'The reason for the pro can be at most 1000 characters.');
-  assert.equal(validateHandling(serviceReport(), 'take_down', '🐕'.repeat(1000)), null);
-  // An action the report doesn't offer is refused before the note is looked at.
+  // The reason is for a take-down only: another action doesn't look at it.
+  assert.equal(validateHandling(reviewReport(), 'dismiss', 'Looks fine to us.', ''), null);
+  assert.equal(validateHandling(reviewReport(), 'dismiss', 'Looks fine to us.', 'x'.repeat(5000)), null);
+
+  // A take-down has two texts, both required: the team's note, and the reason the pro reads.
+  const take = (note, reason) => validateHandling(serviceReport(), 'take_down', note, reason);
+  assert.equal(take('Second report in two weeks.', 'You walked too many dogs at once.'), null);
+  assert.equal(take('Second report in two weeks.', '  hi  '), 'The reason for the pro is required: write at least 5 characters.');
+  assert.equal(take('Second report in two weeks.', ''), 'The reason for the pro is required: write at least 5 characters.');
+  assert.equal(take('Second report in two weeks.', undefined), 'The reason for the pro is required: write at least 5 characters.');
+  assert.equal(take('Second report in two weeks.', 'x'.repeat(1001)), 'The reason for the pro can be at most 1000 characters.');
+  assert.equal(take('Second report in two weeks.', '🐕'.repeat(1000)), null);
+  assert.equal(take('', 'You walked too many dogs at once.'), validateNote(''));
+  assert.equal(take('1234', 'You walked too many dogs at once.'), validateNote('1234'));
+  assert.equal(take('x'.repeat(1001), 'You walked too many dogs at once.'), validateNote('x'.repeat(1001)));
+  assert.equal(take('🐕'.repeat(1000), '🐈'.repeat(1000)), null);
+  // Both wrong: the note comes first, then the reason once the note is fine.
+  assert.equal(take('', ''), validateNote(''));
+  assert.equal(take('', undefined), validateNote(''));
+
+  // The field to put the cursor in, and the sentence.
+  assert.deepEqual(handlingProblem(serviceReport(), 'take_down', '', 'You walked too many dogs.'), { field: 'note', text: validateNote('') });
+  assert.deepEqual(handlingProblem(serviceReport(), 'take_down', 'A fine note.', 'hi'),
+    { field: 'reason', text: 'The reason for the pro is required: write at least 5 characters.' });
+  assert.deepEqual(handlingProblem(reviewReport(), 'dismiss', '1234'), { field: 'note', text: validateNote('1234') });
+  assert.equal(handlingProblem(serviceReport(), 'take_down', 'A fine note.', 'A fine reason.'), null);
+  assert.equal(handlingProblem(reviewReport(), 'dismiss', 'A fine note.'), null);
+
+  // An action the report doesn't offer is refused before the notes are looked at.
   const NOT_OFFERED = 'That action isn’t available for this report.';
   assert.equal(validateHandling(serviceReport(), 'hide_review', 'A fine note.'), NOT_OFFERED);
-  assert.equal(validateHandling(reviewReport(), 'take_down', 'A fine note.'), NOT_OFFERED);
-  assert.equal(validateHandling(reviewReport(), 'take_down', ''), NOT_OFFERED);
+  assert.equal(validateHandling(reviewReport(), 'take_down', 'A fine note.', 'A fine reason.'), NOT_OFFERED);
+  assert.equal(validateHandling(reviewReport(), 'take_down', '', ''), NOT_OFFERED);
   assert.equal(validateHandling(reviewReport({ target: reviewTarget({ hidden: true }) }), 'hide_review', 'A fine note.'), NOT_OFFERED);
   assert.equal(validateHandling(null, 'dismiss', 'A fine note.'), NOT_OFFERED);
+  assert.deepEqual(handlingProblem(null, 'dismiss', 'A fine note.'), { field: 'action', text: NOT_OFFERED });
 });
 
 test('handle_confirm_text_names_what_happens', () => {
   const reason = 'You walked more dogs at once than your listing allows.';
-  // A take-down: what the pet parents see, who is told and with what, and that other reports go with it.
+  // A take-down: what the pet parents see, who is told and with what. The reason is quoted; the note is the
+  // team's own and is not part of what the pro reads.
   const takeDown = handleConfirmText(serviceReport(), 'take_down', `  ${reason}  `);
   assert.equal(takeDown,
     'Take down “Dog walking, 45 min” (Bram’s Dog Care)? It is set to Removed: pet parents can’t find or book it, and bookings already made go ahead. '
-    + `The pro gets a notification with your reason. It reads: “${reason}” It is saved as the note too. `
-    + 'Every open report on the same service is closed with it.');
-  // Not "by push": the in-app notice is always made, the push depends on the pro's settings.
-  assert.match(takeDown, /The pro gets a notification with your reason\./);
-  assert.doesNotMatch(takeDown, /push|is notified/);
+    + 'The pro sees your reason on the service in the app, and gets a notification unless they turned those off. '
+    + `It reads: “${reason}”`);
+  // The notice depends on the pro's settings: no "by push", no "is notified", and the reason is no longer "the note too".
+  assert.doesNotMatch(takeDown, /push|is notified|saved as the note/);
   assert.ok(takeDown.includes(TAKE_DOWN_NOTIFIED));
   assert.match(handleConfirmText(serviceReport({ target: { ...serviceReport().target, pro_display_name: null } }), 'take_down', reason),
     /^Take down “Dog walking, 45 min”\? /);
 
   // Dismissing changes nothing and tells nobody.
-  assert.equal(handleConfirmText(serviceReport(), 'dismiss', 'Asked the pro.'),
-    'Dismiss this report about “Dog walking, 45 min”? Nothing changes: the service stays live and nobody is notified. '
-    + 'Every open report on the same service is closed with it, with your note.');
-  assert.equal(handleConfirmText(serviceReport({ target: { ...serviceReport().target, status: 'paused' } }), 'dismiss', 'Asked the pro.'),
-    'Dismiss this report about “Dog walking, 45 min”? Nothing changes: the service stays paused and nobody is notified. '
-    + 'Every open report on the same service is closed with it, with your note.');
-  assert.equal(handleConfirmText(serviceReport({ target: null }), 'dismiss', 'Asked the pro.'),
-    'Dismiss this report about this service? Nothing changes and nobody is notified. '
-    + 'Every open report on the same service is closed with it, with your note.');
-  assert.equal(handleConfirmText(reviewReport(), 'dismiss', 'Asked the pro.'),
-    'Dismiss this report about the review by Iris? Nothing changes and nobody is notified. '
-    + 'Every open report on the same review is closed with it, with your note.');
-  assert.equal(handleConfirmText(replyReport(), 'dismiss', 'Asked the pro.'),
-    'Dismiss this report about Bram’s Dog Care’s reply under Iris’s review? Nothing changes and nobody is notified. '
-    + 'Every open report on the same reply is closed with it, with your note.');
+  assert.equal(handleConfirmText(serviceReport(), 'dismiss', ''),
+    'Dismiss this report about “Dog walking, 45 min”? Nothing changes: the service stays live and nobody is notified.');
+  assert.equal(handleConfirmText(serviceReport({ target: { ...serviceReport().target, status: 'paused' } }), 'dismiss', ''),
+    'Dismiss this report about “Dog walking, 45 min”? Nothing changes: the service stays paused and nobody is notified.');
+  assert.equal(handleConfirmText(serviceReport({ target: null }), 'dismiss', ''),
+    'Dismiss this report about this service? Nothing changes and nobody is notified.');
+  assert.equal(handleConfirmText(reviewReport(), 'dismiss', ''),
+    'Dismiss this report about the review by Iris? Nothing changes and nobody is notified.');
+  assert.equal(handleConfirmText(reviewReport({ target: proReviewTarget() }), 'dismiss', ''),
+    'Dismiss this report about the review of Iris by Bram’s Dog Care? Nothing changes and nobody is notified.');
+  assert.equal(handleConfirmText(replyReport(), 'dismiss', ''),
+    'Dismiss this report about Bram’s Dog Care’s reply under Iris’s review? Nothing changes and nobody is notified.');
 
-  // Hiding: what disappears, who still sees it, and that nobody is told.
-  assert.equal(handleConfirmText(reviewReport(), 'hide_review', 'Abuse.'),
-    'Hide the review by Iris? It disappears from the service page and from Bram’s Dog Care’s rating. '
-    + 'Iris still sees it, marked hidden. Nobody is notified. Every open report on the same review is closed with it, with your note.');
-  assert.equal(handleConfirmText(reviewReport({ target: reviewTarget({ author_first_name: null, pro_display_name: null }) }), 'hide_review', 'Abuse.'),
-    'Hide the review by a former member? It disappears from the service page and from the pro’s rating. '
-    + 'Nobody is notified. Every open report on the same review is closed with it, with your note.');
-  assert.equal(handleConfirmText(replyReport(), 'hide_reply', 'Insults.'),
-    'Hide Bram’s Dog Care’s reply under Iris’s review? Only the reply is hidden; the review stays. '
-    + 'Nobody is notified. Every open report on the same reply is closed with it, with your note.');
+  // Hiding a reply: only the reply.
+  assert.equal(handleConfirmText(replyReport(), 'hide_reply', ''),
+    'Hide Bram’s Dog Care’s reply under Iris’s review? Only the reply is hidden; the review stays. Nobody is notified.');
 
   // Nothing to ask for an action the report doesn't offer.
   assert.equal(handleConfirmText(reviewReport(), 'take_down', reason), '');
   assert.equal(handleConfirmText(serviceReport(), 'hide_review', reason), '');
   assert.equal(handleConfirmText(null, 'dismiss', reason), '');
+});
+
+test('hide_review_confirm_follows_the_direction_and_says_the_reply_goes_too', () => {
+  const confirmFor = (over) => handleConfirmText(reviewReport({ target: reviewTarget(over) }), 'hide_review', '');
+  // A pet parent's review of a pro: on the service page and in the pro's rating, and the pro's reply under it goes with it.
+  assert.equal(confirmFor({}),
+    'Hide the review by Iris? It disappears from the service page and from Bram’s Dog Care’s rating. '
+    + 'Iris still sees it, marked hidden. The reply under it goes with it. Nobody is notified.');
+  // Without a reply there is nothing to say about one.
+  assert.equal(confirmFor({ reply: null }),
+    'Hide the review by Iris? It disappears from the service page and from Bram’s Dog Care’s rating. '
+    + 'Iris still sees it, marked hidden. Nobody is notified.');
+  assert.equal(confirmFor({ reply: '   ' }).includes('reply'), false);
+  // A reply that is hidden already goes with the review all the same.
+  assert.match(confirmFor({ reply_hidden: true }), /The reply under it goes with it\./);
+  assert.equal(confirmFor({ author_first_name: null, pro_display_name: null }),
+    'Hide the review by a former member? It disappears from the service page and from the pro’s rating. '
+    + 'The reply under it goes with it. Nobody is notified.');
+  // A pro's review of a pet parent: in the pet parent's rating, which pros see; on no service page.
+  assert.equal(confirmFor(proReviewTarget()),
+    'Hide the review of Iris by Bram’s Dog Care? It disappears from Iris’s rating, which pros see. '
+    + 'It is not on any service page. Nobody is notified.');
+  assert.equal(confirmFor(proReviewTarget({ subject_first_name: null, pro_display_name: null })),
+    'Hide the review of a former member by the pro? It disappears from a former member’s rating, which pros see. '
+    + 'It is not on any service page. Nobody is notified.');
+  assert.doesNotMatch(confirmFor(proReviewTarget()), /Bram’s Dog Care’s rating|the service page and/);
+  // No direction, or one the page doesn't know: words that name no rating.
+  const { direction, ...older } = reviewTarget();
+  for (const target of [older, reviewTarget({ direction: null }), reviewTarget({ direction: 'sideways' })]) {
+    const text = handleConfirmText(reviewReport({ target }), 'hide_review', '');
+    assert.equal(text, 'Hide the review by Iris? It is hidden wherever it is shown. The reply under it goes with it. Nobody is notified.');
+    assert.doesNotMatch(text, /rating|service page/);
+  }
+});
+
+test('the_other_open_reports_are_named_in_the_confirm', () => {
+  const svc = serviceReport().target;
+  const mine = serviceReport();
+  const daan = serviceReport({ id: 'rep-s2', reporter: { first_name: 'Daan' }, reason: 'welfare' });
+  const iris = serviceReport({ id: 'rep-s3', reporter: { first_name: 'Iris' }, reason: 'scam' });
+  const elsewhere = serviceReport({ id: 'rep-s9', reporter: { first_name: 'Eva' }, target: { ...svc, id: 'svc-9' } });
+  const otherKind = reviewReport({ id: 'rep-r9', target: reviewTarget({ id: 'svc-1' }) }); // a review that has this service's id
+  const rows = [mine, daan, elsewhere, iris, otherKind];
+  const open = { rows, total: rows.length };
+  const SAVED = 'They are saved with your note.';
+
+  // Which ones: the other open reports of the same type on the same target, in the order of the list.
+  assert.deepEqual(otherOpenReports(mine, rows).map((r) => r.id), ['rep-s2', 'rep-s3']);
+  assert.deepEqual(otherOpenReports(daan, rows).map((r) => r.id), ['rep-s1', 'rep-s3']);
+  assert.deepEqual(otherOpenReports(elsewhere, rows), []);
+  assert.deepEqual(otherOpenReports(otherKind, rows), []);
+  assert.deepEqual(otherOpenReports(mine, [mine]), []);
+  // Not the ones that are handled, whose target is gone or has no id, or that this tab doesn't list.
+  const handled = { at: '2026-10-22T09:00:00Z', action: 'dismissed', note: 'x' };
+  assert.deepEqual(otherOpenReports(mine, [
+    { ...daan, handled }, { ...iris, target: null }, { ...iris, target: { ...svc, id: undefined } }, { ...iris, target: 'x' },
+    null, 'x', { id: 'u', target_type: 'user', target: { id: 'svc-1' } }, { ...iris, id: '' },
+  ]), []);
+  // No target to match: none, whatever the rows are.
+  assert.deepEqual(otherOpenReports(serviceReport({ target: null }), rows), []);
+  assert.deepEqual(otherOpenReports({ ...mine, target: { ...svc, id: '' } }, rows), []);
+  for (const bad of [null, undefined, 'x', {}, [], { id: 'x', target_type: 'user' }]) assert.deepEqual(otherOpenReports(bad, rows), [], JSON.stringify(bad));
+  for (const bad of [null, undefined, 'x', {}, 4]) assert.deepEqual(otherOpenReports(mine, bad), [], JSON.stringify(bad));
+
+  // Dismiss: how many, which ones (reason and reporter), and that they get the note.
+  const dismissStart = 'Dismiss this report about “Dog walking, 45 min”? Nothing changes: the service stays live and nobody is notified. ';
+  assert.equal(handleConfirmText(mine, 'dismiss', '', open),
+    `${dismissStart}This also dismisses 2 other open reports on this service: Animal welfare concern (Daan), Scam or fraud (Iris). ${SAVED}`);
+  assert.equal(handleConfirmText(mine, 'dismiss', '', { rows: [mine, daan], total: 2 }),
+    `${dismissStart}This also dismisses 1 other open report on this service: Animal welfare concern (Daan). ${SAVED}`);
+  // Without the list, or with a list that has no other, there is nothing to name.
+  for (const none of [undefined, null, {}, { rows: 'x' }, { rows: [mine], total: 1 }, { rows: [mine, elsewhere, otherKind], total: 3 }]) {
+    assert.equal(handleConfirmText(mine, 'dismiss', '', none), dismissStart.trim(), JSON.stringify(none));
+  }
+
+  // "At least" when the list was cut: more are open than were loaded, and the rest may be on this service.
+  assert.equal(handleConfirmText(mine, 'dismiss', '', { rows, total: 41 }),
+    `${dismissStart}This also dismisses at least 2 other open reports on this service: Animal welfare concern (Daan), Scam or fraud (Iris). ${SAVED}`);
+  assert.equal(handleConfirmText(mine, 'dismiss', '', { rows: [mine, daan], total: 6 }),
+    `${dismissStart}This also dismisses at least 1 other open report on this service: Animal welfare concern (Daan). ${SAVED}`);
+  assert.equal(handleConfirmText(mine, 'dismiss', '', { rows: [mine], total: 6 }),
+    `${dismissStart}Any other open report on this service that isn’t loaded here is closed with it too.`);
+  // A total that can't be right (below the list, or not a whole number) is no sign of a cut list.
+  for (const total of [0, 1, -3, 2.5, '9', null, undefined, NaN]) {
+    assert.doesNotMatch(handleConfirmText(mine, 'dismiss', '', { rows, total }), /at least|isn’t loaded/, String(total));
+  }
+
+  // A deleted target: the server groups nothing, so nothing is named, cut list or not.
+  const gone = serviceReport({ target: null });
+  assert.equal(handleConfirmText(gone, 'dismiss', '', { rows: [gone, daan], total: 41 }),
+    'Dismiss this report about this service? Nothing changes and nobody is notified.');
+  assert.equal(handleConfirmText(gone, 'dismiss', '', { rows: [gone], total: 1 }),
+    'Dismiss this report about this service? Nothing changes and nobody is notified.');
+
+  // A deleted reporter, and a long reason, are named briefly.
+  const nameless = serviceReport({ id: 'rep-s4', reporter: { first_name: null }, reason: `Other: ${'z'.repeat(300)}` });
+  assert.match(handleConfirmText(mine, 'dismiss', '', { rows: [mine, nameless], total: 2 }),
+    new RegExp(`on this service: Other: ${'z'.repeat(73)}… \\(a deleted account\\)\\. ${SAVED}$`));
+  assert.doesNotMatch(handleConfirmText(mine, 'dismiss', '', { rows: [mine, nameless], total: 2 }), /z{74}/);
+
+  // A take-down and the hides close them too, and say so.
+  const reason = 'You walked more dogs at once than your listing allows.';
+  assert.equal(handleConfirmText(mine, 'take_down', reason, open),
+    'Take down “Dog walking, 45 min” (Bram’s Dog Care)? It is set to Removed: pet parents can’t find or book it, and bookings already made go ahead. '
+    + `${TAKE_DOWN_NOTIFIED} It reads: “${reason}” `
+    + `This also closes 2 other open reports on this service: Animal welfare concern (Daan), Scam or fraud (Iris). ${SAVED}`);
+  assert.match(handleConfirmText(mine, 'take_down', reason, { rows, total: 41 }), / This also closes at least 2 other open reports on this service: /);
+
+  const rev = reviewReport();
+  const noor = reviewReport({ id: 'rep-r2', reporter: { first_name: 'Noor' }, reason: 'Spam or scam' });
+  const aReply = replyReport({ id: 'rep-p7', reporter: { first_name: 'Eva' } }); // the same review's reply: a different target
+  const otherReview = reviewReport({ id: 'rep-r3', target: reviewTarget({ id: 'rev-9' }) });
+  const reviewRows = [rev, aReply, noor, otherReview];
+  assert.deepEqual(otherOpenReports(rev, reviewRows).map((r) => r.id), ['rep-r2']);
+  assert.equal(handleConfirmText(rev, 'hide_review', '', { rows: reviewRows, total: 4 }),
+    'Hide the review by Iris? It disappears from the service page and from Bram’s Dog Care’s rating. '
+    + 'Iris still sees it, marked hidden. The reply under it goes with it. Nobody is notified. '
+    + `This also closes 1 other open report on this review: Spam or scam (Noor). ${SAVED}`);
+  assert.equal(handleConfirmText(rev, 'dismiss', '', { rows: reviewRows, total: 40 }),
+    'Dismiss this report about the review by Iris? Nothing changes and nobody is notified. '
+    + `This also dismisses at least 1 other open report on this review: Spam or scam (Noor). ${SAVED}`);
+  const proRev = reviewReport({ id: 'rep-r5', target: proReviewTarget() });
+  const proRev2 = reviewReport({ id: 'rep-r6', reporter: { first_name: 'Noor' }, reason: 'Hate speech', target: proReviewTarget() });
+  assert.equal(handleConfirmText(proRev, 'hide_review', '', { rows: [proRev, proRev2], total: 2 }),
+    'Hide the review of Iris by Bram’s Dog Care? It disappears from Iris’s rating, which pros see. '
+    + `It is not on any service page. Nobody is notified. This also closes 1 other open report on this review: Hate speech (Noor). ${SAVED}`);
+
+  const reply = replyReport();
+  const replyToo = replyReport({ id: 'rep-p2', reporter: { first_name: 'Noor' }, reason: 'Hate speech' });
+  assert.equal(handleConfirmText(reply, 'hide_reply', '', { rows: [reply, rev, replyToo], total: 3 }),
+    'Hide Bram’s Dog Care’s reply under Iris’s review? Only the reply is hidden; the review stays. Nobody is notified. '
+    + `This also closes 1 other open report on this reply: Hate speech (Noor). ${SAVED}`);
 });
 
 test('handled_text_is_believed_only_from_the_answer', () => {
@@ -1969,9 +2254,30 @@ test('handled_text_is_believed_only_from_the_answer', () => {
   assert.equal(handledText(answer(hiddenReply, 2), replyReport(), 'hide_reply'),
     'Bram’s Dog Care’s reply is hidden. The review stays. 1 other report on the same reply was closed with it.');
   assert.equal(handledText(answer({ ...hiddenReply, target: reviewTarget({ reply_hidden: false }) }), replyReport(), 'hide_reply'), null);
-  // Each hide is believed from its own flag: the other type's doesn't prove it.
+  // Each hide is believed from its own flag: the other part's being hidden doesn't prove it.
   assert.equal(handledText(answer({ ...hiddenReply, target: reviewTarget({ hidden: true }) }), replyReport(), 'hide_reply'), null);
   assert.equal(handledText(answer({ ...hiddenReview, target: reviewTarget({ reply_hidden: true }) }), reviewReport(), 'hide_review'), null);
+  // Both parts hidden (the server sends both flags): each hide is still believed.
+  assert.equal(handledText(answer({ ...hiddenReview, target: reviewTarget({ hidden: true, reply_hidden: true }) }), reviewReport(), 'hide_review'),
+    'The review by Iris is hidden.');
+  assert.equal(handledText(answer({ ...hiddenReply, target: reviewTarget({ hidden: true, reply_hidden: true }) }), replyReport(), 'hide_reply'),
+    'Bram’s Dog Care’s reply is hidden. The review stays.');
+
+  // A hidden review says whose rating it left, by its direction (the answer's own target).
+  const proHidden = { ...reviewReport({ id: 'rep-r5' }), target: proReviewTarget({ hidden: true }), handled: handled('review_hidden') };
+  const proReport = reviewReport({ id: 'rep-r5', target: proReviewTarget() });
+  assert.equal(handledText(answer(proHidden), proReport, 'hide_review'),
+    'The review of Iris by Bram’s Dog Care is hidden: it is out of Iris’s rating.');
+  assert.equal(handledText(answer(proHidden, 3), proReport, 'hide_review'),
+    'The review of Iris by Bram’s Dog Care is hidden: it is out of Iris’s rating. 2 other reports on the same review were closed with it.');
+  assert.equal(handledText(answer({ ...proHidden, target: proReviewTarget({ hidden: true, subject_first_name: null, pro_display_name: null }) }), proReport, 'hide_review'),
+    'The review of a former member by the pro is hidden: it is out of a former member’s rating.');
+  assert.equal(handledText(answer({ ...proHidden, target: proReviewTarget({ hidden: false }) }), proReport, 'hide_review'), null);
+  // A pet parent's review, no direction or one the page doesn't know: the words that name no rating.
+  const { direction, ...older } = reviewTarget({ hidden: true });
+  for (const target of [older, reviewTarget({ hidden: true, direction: 'sideways' }), reviewTarget({ hidden: true, direction: 'customer_to_pro' })]) {
+    assert.equal(handledText(answer({ ...hiddenReview, target }), reviewReport(), 'hide_review'), 'The review by Iris is hidden.');
+  }
 
   // Not believed: another report, another action, no handling, no time, or something that isn't an answer.
   const ok = answer({ ...serviceReport(), handled: handled('dismissed') });
@@ -2044,9 +2350,10 @@ test('a_notice_survives_a_failed_reload', () => {
   assert.equal(failed.kind, 'bad');
   assert.doesNotMatch(failed.text, /The list was reloaded/);
   assert.match(failed.text, /Couldn’t reload the list \(network error\)/);
-  // The odd answer is a warning either way.
-  const odd = { kind: 'warn', text: 'The server answered, but not with the report that was sent.', reloads: true };
-  assert.equal(reportNoticeShown(odd, null).text, `The server answered, but not with the report that was sent. ${LIST_RELOADED}`);
+  // The odd answer is a warning either way, in words that don't say what came back.
+  assert.equal(NOT_CONFIRMED, 'The server’s answer didn’t confirm the change.');
+  const odd = { kind: 'warn', text: NOT_CONFIRMED, reloads: true };
+  assert.equal(reportNoticeShown(odd, null).text, `The server’s answer didn’t confirm the change. ${LIST_RELOADED}`);
   assert.equal(reportNoticeShown(odd, 'boom').kind, 'warn');
   // Not a notice.
   for (const bad of [null, undefined, 'x', {}, { kind: 'ok' }, { text: 5 }]) assert.equal(reportNoticeShown(bad, null), null, JSON.stringify(bad));
