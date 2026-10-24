@@ -1252,6 +1252,298 @@ export function markHandledErrorText(error) {
   return `Couldn’t mark it handled: ${message ?? 'unknown error'}. Refresh the list to see whether it went through.`;
 }
 
+// ---------------------------------------------------------------------------
+// The Reports tab (admin_list_reports and admin_handle_report)
+// ---------------------------------------------------------------------------
+
+// A report is one item of admin_list_reports: {id, target_type, reason, created_at, reporter: {first_name},
+// target, target_text, earlier_reports, handled}. The tab takes the reports about a service, a review and the
+// reply under a review; user, post, message and comment reports stay where they are. As elsewhere in this file,
+// a missing or odd part reads as empty and nothing here trusts the shape.
+
+const REPORT_KINDS = {
+  service: { kind: 'SERVICE', tag: 'service report', noun: 'service' },
+  review: { kind: 'REVIEW', tag: 'review report', noun: 'review' },
+  review_reply: { kind: 'REPLY', tag: 'reply report', noun: 'reply' },
+};
+
+// The app's service sheet sends keys; the review and reply sheets send their own words, kept as they are.
+const REPORT_REASONS = {
+  misleading: 'Misleading', welfare: 'Animal welfare concern', scam: 'Scam or fraud',
+  inappropriate: 'Inappropriate content', other: 'Other',
+};
+
+// What a report's reason reads like, 'No reason given' when it has none.
+function reportReasonLabel(reason) {
+  const text = trimmed(reason);
+  return text === null ? 'No reason given' : lookup(REPORT_REASONS, text);
+}
+
+// The kind of a report the tab can show (it needs an id to be acted on), else null.
+function reportKind(item) {
+  if (!isObject(item) || trimmed(item.id) === null || typeof item.target_type !== 'string') return null;
+  return Object.hasOwn(REPORT_KINDS, item.target_type) ? REPORT_KINDS[item.target_type] : null;
+}
+
+// The names in a target. null parts are the ones the database no longer has.
+function targetParts(target) {
+  const t = isObject(target) ? target : null;
+  return { t, author: trimmed(t?.author_first_name), pro: trimmed(t?.pro_display_name), title: trimmed(t?.title) };
+}
+
+const formerMember = 'a former member';
+const possessive = (name, fallback) => (name ? `${name}’s` : fallback);
+// "Dog walking, 45 min" in quotes, or the words for a service that has no title.
+const serviceName = (title) => (title ? `“${title}”` : 'this service');
+
+// admin_list_reports' answer, {items, total}, as {items, total}: the reports this tab can show, and how many
+// are open in all (more than the list when it was cut). null when the answer is not that.
+export function reportList(data) {
+  if (!isObject(data) || !Array.isArray(data.items)) return null;
+  const items = data.items.filter((item) => reportKind(item) !== null);
+  const total = Number.isSafeInteger(data.total) && data.total >= items.length ? data.total : items.length;
+  return { items, total };
+}
+
+// What the list's row and the card's head say about a report: {id, kind: 'SERVICE'|'REVIEW'|'REPLY', tag:
+// 'service report', by: who reported, reason, heading, what, reported: the text as reported, quoted, or null}.
+// null for something this tab doesn't list. A target the database no longer has (target: null) is named as
+// deleted; the text as reported stays.
+export function reportRowText(item) {
+  const info = reportKind(item);
+  if (info === null) return null;
+  const { t, author, pro, title } = targetParts(item.target);
+  const reason = reportReasonLabel(item.reason);
+  let what;
+  let subject;
+  if (item.target_type === 'service') {
+    subject = t === null ? 'A deleted service' : (title ?? 'Untitled service');
+    what = [subject, pro].filter(Boolean).join(' · ');
+  } else if (item.target_type === 'review') {
+    subject = t === null ? 'A deleted review' : `Review by ${author ?? formerMember}`;
+    what = t === null ? subject : [`By ${author ?? formerMember}`, pro].filter(Boolean).join(' · ');
+  } else {
+    subject = t === null ? 'A deleted reply' : `Reply from ${pro ?? 'the pro'}`;
+    what = t === null ? subject : `${pro ?? 'The pro'}, under ${possessive(author, 'a former member’s')} review`;
+  }
+  const text = trimmed(item.target_text);
+  return {
+    id: item.id,
+    kind: info.kind,
+    tag: info.tag,
+    by: trimmed(item.reporter?.first_name) ?? 'Deleted account',
+    reason,
+    heading: `${reason} · ${subject}`,
+    what,
+    reported: text === null ? null : `“${text}”`,
+  };
+}
+
+// "From Noor · no earlier reports": who reported, and how many reports on the same service, review or reply
+// were filed before this one (earlier_reports). '' for something this tab doesn't list.
+export function reportFromLine(item) {
+  const text = reportRowText(item);
+  if (text === null) return '';
+  const n = Number.isInteger(item.earlier_reports) && item.earlier_reports > 0 ? item.earlier_reports : 0;
+  const earlier = n === 0 ? 'no earlier reports' : n === 1 ? '1 earlier report' : `${n} earlier reports`;
+  return `From ${text.by === 'Deleted account' ? 'a deleted account' : text.by} · ${earlier}`;
+}
+
+// How long a report has waited, in the words of the other tabs: {list: '2 days', card: 'Reported Wed 21 Oct,
+// 14:10 · waiting 2 days'} (the time is Amsterdam's). The server sets created_at. null for a report that is
+// handled, or whose time isn't a date.
+export function reportWaiting(item, now = Date.now()) {
+  if (reportKind(item) === null || isObject(item.handled)) return null;
+  const iso = item.created_at;
+  if (typeof iso !== 'string' || !Number.isFinite(Date.parse(iso))) return null;
+  const long = waitedFor(iso, now);
+  return { list: long, card: `Reported ${whenLabel(iso)} · waiting ${long}` };
+}
+
+// The actions the team has on a report: a service gets dismiss and take down, a review dismiss and hide review,
+// a reply dismiss and hide reply. The server refuses an action on a target that is gone or already in that
+// state (not_eligible), so when the item says what the target is now (it has the `target` key) only dismiss is
+// left for those; a row without the key says nothing about it and gets the target's own list. [] for a report
+// that is handled, or that this tab doesn't take.
+export function reportActions(item) {
+  if (reportKind(item) === null || isObject(item.handled)) return [];
+  const only = ['dismiss'];
+  if (!Object.hasOwn(item, 'target')) {
+    return ['dismiss', { service: 'take_down', review: 'hide_review', review_reply: 'hide_reply' }[item.target_type]];
+  }
+  const t = isObject(item.target) ? item.target : null;
+  if (t === null) return only;
+  switch (item.target_type) {
+    case 'service':
+      return typeof t.status !== 'string' || t.status === 'live' || t.status === 'paused' ? [...only, 'take_down'] : only;
+    case 'review':
+      return t.hidden === true ? only : [...only, 'hide_review'];
+    default:
+      return trimmed(t.reply) === null || t.reply_hidden === true ? only : [...only, 'hide_reply'];
+  }
+}
+
+// Why only Dismiss is on offer for a report, or null when nothing is missing. A handled report says so.
+export function reportTargetState(item) {
+  const info = reportKind(item);
+  if (info === null) return null;
+  if (isObject(item.handled)) return 'This report was handled already.';
+  if (!Object.hasOwn(item, 'target')) return null;
+  const t = isObject(item.target) ? item.target : null;
+  const only = 'so the report can only be dismissed.';
+  if (t === null) return `This ${info.noun} has been deleted, ${only}`;
+  if (item.target_type === 'service') {
+    if (t.status === 'removed') return `This service is removed already, ${only}`;
+    if (typeof t.status === 'string' && t.status !== 'live' && t.status !== 'paused') {
+      return `This service is ${t.status}, so it can’t be taken down. The report can only be dismissed.`;
+    }
+  } else if (item.target_type === 'review') {
+    if (t.hidden === true) return `This review is hidden already, ${only}`;
+  } else {
+    if (trimmed(t.reply) === null) return `This review has no reply any more, ${only}`;
+    if (t.reply_hidden === true) return `This reply is hidden already, ${only}`;
+  }
+  return null;
+}
+
+const REPORT_ACTION_LABELS = {
+  dismiss: 'Dismiss', take_down: 'Take the service down', hide_review: 'Hide review', hide_reply: 'Hide reply',
+};
+
+// The button's words ('' for an action this tab doesn't have).
+export function reportActionLabel(action) {
+  return typeof action === 'string' && Object.hasOwn(REPORT_ACTION_LABELS, action) ? REPORT_ACTION_LABELS[action] : '';
+}
+
+// Under a take-down's reason, and in its question: the pro reads the reason.
+export const TAKE_DOWN_NOTIFIED = 'The pro is notified with this reason, in the app and by push.';
+
+// The sentence beside an action's button: R11's, with this report's names.
+export function reportActionHint(item, action) {
+  if (reportKind(item) === null) return '';
+  const { t, author, pro } = targetParts(item.target);
+  switch (action) {
+    case 'dismiss':
+      if (item.target_type !== 'service') return 'Nothing changes. Needs the note.';
+      return t?.status === 'live' || t?.status === 'paused'
+        ? `Closes the report. The service stays ${t.status} and nobody is notified.`
+        : 'Closes the report. Nobody is notified.';
+    case 'take_down':
+      return 'Sets it to Removed: pet parents can’t find or book it. Bookings already made go ahead.';
+    case 'hide_review':
+      return `Gone from the service page and from ${possessive(pro, 'the pro’s')} rating. ${author ? `${author} still sees it, marked hidden. ` : ''}Needs the note.`;
+    case 'hide_reply':
+      return 'Hides only the reply; the review stays. Only on a reply report. Needs the note.';
+    default:
+      return '';
+  }
+}
+
+// 5 to 1000 characters once trimmed, counted the way Postgres counts (characters, not UTF-16 units), as
+// validateNote does; `subject` names the text in the sentence.
+function textProblem(text, subject) {
+  const length = typeof text === 'string' ? [...text.trim()].length : 0;
+  if (length < NOTE_MIN) return `${subject} is required: write at least ${NOTE_MIN} characters.`;
+  if (length > NOTE_MAX) return `${subject} can be at most ${NOTE_MAX} characters.`;
+  return null;
+}
+
+// null when `action` with `text` can be sent for this report, else the sentence to show. `text` is the note, or
+// for a take-down the reason the pro reads (the server keeps it as the note too).
+export function validateHandling(item, action, text) {
+  if (!reportActions(item).includes(action)) return 'That action isn’t available for this report.';
+  return textProblem(text, action === 'take_down' ? 'The reason for the pro' : 'The note');
+}
+
+// The arguments of admin_handle_report: the report, the action, the text trimmed. null when
+// validateHandling would refuse it: then nothing may be sent.
+export function handleArgs(item, action, text) {
+  if (validateHandling(item, action, text) !== null) return null;
+  return { p_report_id: item.id, p_action: action, p_note: text.trim() };
+}
+
+// The question before an action is sent: what happens, to whom, and that every open report on the same target
+// goes with it. '' for an action this report doesn't offer.
+export function handleConfirmText(item, action, text) {
+  if (!reportActions(item).includes(action)) return '';
+  const { t, author, pro, title } = targetParts(item.target);
+  const noun = REPORT_KINDS[item.target_type].noun;
+  const closes = `Every open report on the same ${noun} is closed with it`;
+  const theirs = possessive(pro, 'the pro’s');
+  const authors = possessive(author, 'a former member’s');
+  switch (action) {
+    case 'take_down':
+      return `Take down ${serviceName(title)}${pro ? ` (${pro})` : ''}? It is set to Removed: pet parents can’t find or book it, and bookings already made go ahead. `
+        + `${TAKE_DOWN_NOTIFIED.slice(0, -1)}: “${typeof text === 'string' ? text.trim() : ''}” It is saved as the note too. ${closes}.`;
+    case 'hide_review':
+      return `Hide the review by ${author ?? formerMember}? It disappears from the service page and from ${theirs} rating. `
+        + `${author ? `${author} still sees it, marked hidden. ` : ''}Nobody is notified. ${closes}, with your note.`;
+    case 'hide_reply':
+      return `Hide ${theirs} reply under ${authors} review? Only the reply is hidden; the review stays. Nobody is notified. ${closes}, with your note.`;
+    default: {
+      const subject = item.target_type === 'service' ? serviceName(title)
+        : item.target_type === 'review' ? `the review by ${author ?? formerMember}`
+          : `${theirs} reply under ${authors} review`;
+      const nothing = t?.status === 'live' || t?.status === 'paused'
+        ? `Nothing changes: the service stays ${t.status} and nobody is notified.`
+        : 'Nothing changes and nobody is notified.';
+      return `Dismiss this report about ${subject}? ${nothing} ${closes}, with your note.`;
+    }
+  }
+}
+
+const HANDLED_ACTIONS = {
+  dismiss: 'dismissed', take_down: 'service_removed', hide_review: 'review_hidden', hide_reply: 'reply_hidden',
+};
+
+// The banner after an action, worked out from what the database answered ({report, handled_count}), not from
+// what was sent: only an answer that is this report, handled in the way that was asked, and (for a take-down
+// and the hides) shows the target in the state the action leaves it in. null otherwise: then the page
+// must not claim anything. Others closed with it, on the same target, are counted.
+export function handledText(answer, item, action) {
+  const info = reportKind(item);
+  if (info === null || typeof action !== 'string' || !Object.hasOwn(HANDLED_ACTIONS, action) || !isObject(answer)) return null;
+  const report = answer.report;
+  const done = isObject(report) ? report.handled : null;
+  if (!isObject(done) || report.id !== item.id || report.target_type !== item.target_type) return null;
+  if (done.action !== HANDLED_ACTIONS[action]) return null;
+  if (typeof done.at !== 'string' || !Number.isFinite(Date.parse(done.at))) return null;
+  const { t, author, pro, title } = targetParts(report.target);
+  if (action === 'take_down' && t?.status !== 'removed') return null;
+  if (action === 'hide_review' && t?.hidden !== true) return null;
+  if (action === 'hide_reply' && t?.reply_hidden !== true) return null;
+
+  const said = {
+    dismiss: 'Report dismissed. Nothing changed.',
+    take_down: `${title ? `“${title}”` : 'The service'} is taken down: it is now Removed.`,
+    hide_review: `The review by ${author ?? formerMember} is hidden.`,
+    hide_reply: `${possessive(pro, 'The pro’s')} reply is hidden. The review stays.`,
+  }[action];
+  const others = Number.isInteger(answer.handled_count) ? answer.handled_count - 1 : 0;
+  if (others < 1) return said;
+  return `${said} ${others === 1 ? '1 other report' : `${others} other reports`} on the same ${info.noun} ${others === 1 ? 'was' : 'were'} closed with it.`;
+}
+
+// A refusal that says the state moved on under the reviewer (22023 not_eligible: handled already, the target
+// gone or already hidden or removed). The page reloads the list for it.
+export function handleRefusalIsStale(error) {
+  return isObject(error) && (error.hint === 'not_eligible' || /not_eligible/.test(trimmed(error.message) ?? ''));
+}
+
+// A failed action in words. The database's own reason is shown as it is; any other failure may or may not
+// have gone through.
+export function handleErrorText(error) {
+  const message = trimmed(error?.message);
+  if (error?.code === '42501' || /Admins only/.test(message ?? '')) return 'Couldn’t save: this account isn’t an admin.';
+  if (handleRefusalIsStale(error)) {
+    return `Couldn’t save: the server refused it (${message ?? 'not_eligible'}). Someone may have handled this report already, or what it is about has changed. The list was reloaded; check the report before trying again.`;
+  }
+  if (error?.hint === 'invalid_input' || /invalid_input/.test(message ?? '')) {
+    return `Couldn’t save: the server refused it (${message ?? 'invalid_input'}).`;
+  }
+  return `Couldn’t save: ${message ?? 'unknown error'}. Refresh the list to see whether it went through.`;
+}
+
 // ---- One request per case ------------------------------------------------------
 
 // Tracks which cases have a request on its way, so none is sent twice and an

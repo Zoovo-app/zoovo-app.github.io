@@ -16,7 +16,9 @@ import {
   requeuedText, seenLogId, decisionNoticeText, canCheckTransfer, checkTransferConfirmText,
   stripeRefundStatusLabel, decisionArgs, CASE_CHANGED, retryLabel, paymentHealth, strayPayments,
   strayPaymentNotes, onlyStrayPayments, waitedFor, waitingTexts, keepWaiting, markHandledArgs,
-  markHandledConfirmText, markedHandledText, markHandledErrorText,
+  markHandledConfirmText, markedHandledText, markHandledErrorText, reportList, reportRowText, reportWaiting,
+  reportActions, reportTargetState, reportActionLabel, reportActionHint, validateHandling, handleArgs,
+  handleConfirmText, handledText, handleErrorText, handleRefusalIsStale, TAKE_DOWN_NOTIFIED, reportFromLine,
 } from './lib.js';
 
 // verification as admin_list_pro_applications and admin_list_pros return it:
@@ -1535,4 +1537,455 @@ test('a_pending_payouts_retry_says_it_looks_first', () => {
   const refused = failedJobs(pending({ ...retryable, retryable: false, retry_refusal: 'The payout is pending, not being paid' }))[0];
   assert.equal(refused.retryable, false);
   assert.equal(refused.refusal, 'The payout is pending, not being paid');
+});
+
+// ---- The Reports tab (admin_list_reports and admin_handle_report) -----------------------------------------------
+
+const BRAM = 'Bram’s Dog Care';
+// The items as admin_list_reports serves them (Task 4's report: report_admin_json).
+const serviceReport = (over = {}) => ({
+  id: 'rep-s1', target_type: 'service', reason: 'welfare', created_at: '2026-10-21T12:10:00+00:00',
+  reporter: { first_name: 'Noor' },
+  target: { id: 'svc-1', title: 'Dog walking, 45 min', status: 'live', pro_display_name: BRAM },
+  target_text: 'Dog walking, 45 min', earlier_reports: 0, handled: null, ...over,
+});
+const reviewTarget = (over = {}) => ({
+  id: 'rev-1', comment: 'Rude and useless. Never again.', reply: 'Maybe train your dog before you complain.',
+  author_first_name: 'Iris', pro_display_name: BRAM, ...over,
+});
+const reviewReport = (over = {}) => ({
+  id: 'rep-r1', target_type: 'review', reason: 'Harassment or bullying', created_at: '2026-10-22T12:10:00+00:00',
+  reporter: { first_name: 'Bram' }, target: reviewTarget({ hidden: false }),
+  target_text: 'Rude and useless. Never again.', earlier_reports: 1, handled: null, ...over,
+});
+const replyReport = (over = {}) => ({
+  id: 'rep-p1', target_type: 'review_reply', reason: 'Inappropriate content', created_at: '2026-10-23T06:10:00+00:00',
+  reporter: { first_name: 'Iris' }, target: reviewTarget({ reply_hidden: false }),
+  target_text: 'Maybe train your dog before you complain.', earlier_reports: 0, handled: null, ...over,
+});
+const REPORT_NOW = Date.parse('2026-10-23T12:10:00Z');
+
+test('report_row_text_per_target', () => {
+  assert.deepEqual(reportRowText(serviceReport()), {
+    id: 'rep-s1', kind: 'SERVICE', tag: 'service report', by: 'Noor', reason: 'Animal welfare concern',
+    heading: 'Animal welfare concern · Dog walking, 45 min',
+    what: 'Dog walking, 45 min · Bram’s Dog Care', reported: '“Dog walking, 45 min”',
+  });
+  assert.deepEqual(reportRowText(reviewReport()), {
+    id: 'rep-r1', kind: 'REVIEW', tag: 'review report', by: 'Bram', reason: 'Harassment or bullying',
+    heading: 'Harassment or bullying · Review by Iris',
+    what: 'By Iris · Bram’s Dog Care', reported: '“Rude and useless. Never again.”',
+  });
+  assert.deepEqual(reportRowText(replyReport()), {
+    id: 'rep-p1', kind: 'REPLY', tag: 'reply report', by: 'Iris', reason: 'Inappropriate content',
+    heading: 'Inappropriate content · Reply from Bram’s Dog Care',
+    what: 'Bram’s Dog Care, under Iris’s review', reported: '“Maybe train your dog before you complain.”',
+  });
+
+  // The reporter's account is gone: said the way the Problems tab says it.
+  assert.equal(reportRowText(serviceReport({ reporter: { first_name: null } })).by, 'Deleted account');
+  assert.equal(reportRowText(serviceReport({ reporter: null })).by, 'Deleted account');
+  assert.equal(reportRowText(serviceReport({ reporter: { first_name: '  ' } })).by, 'Deleted account');
+
+  // The target is deleted (target: null): what was reported stays, as reported.
+  const gone = (report) => reportRowText({ ...report, target: null });
+  assert.equal(gone(serviceReport()).what, 'A deleted service');
+  assert.equal(gone(reviewReport()).what, 'A deleted review');
+  assert.equal(gone(replyReport()).what, 'A deleted reply');
+  assert.equal(gone(serviceReport()).heading, 'Animal welfare concern · A deleted service');
+  assert.equal(gone(serviceReport()).reported, '“Dog walking, 45 min”');
+  assert.equal(gone(replyReport()).reported, '“Maybe train your dog before you complain.”');
+
+  // Parts of a target that are gone: a former member, a deleted pro, a service with no live title.
+  const review = (over) => reportRowText(reviewReport({ target: reviewTarget(over) }));
+  assert.equal(review({ author_first_name: null }).what, 'By a former member · Bram’s Dog Care');
+  assert.equal(review({ author_first_name: null }).heading, 'Harassment or bullying · Review by a former member');
+  assert.equal(review({ pro_display_name: null }).what, 'By Iris');
+  const reply = (over) => reportRowText(replyReport({ target: reviewTarget(over) }));
+  assert.equal(reply({ author_first_name: null }).what, 'Bram’s Dog Care, under a former member’s review');
+  assert.equal(reply({ pro_display_name: null }).what, 'The pro, under Iris’s review');
+  assert.equal(reply({ pro_display_name: null }).heading, 'Inappropriate content · Reply from the pro');
+  const svc = (over) => reportRowText(serviceReport({ target: { ...serviceReport().target, ...over } }));
+  assert.equal(svc({ pro_display_name: null }).what, 'Dog walking, 45 min');
+  assert.equal(svc({ title: null }).what, 'Untitled service · Bram’s Dog Care');
+  assert.equal(svc({ title: null }).heading, 'Animal welfare concern · Untitled service');
+
+  // A review with no comment has no text as reported.
+  for (const none of [null, '', '   ', undefined, 5]) {
+    assert.equal(reportRowText(reviewReport({ target_text: none })).reported, null, String(none));
+  }
+  // Text is kept as it is, quotes and markup included: the page sets it with textContent.
+  assert.equal(reportRowText(reviewReport({ target_text: ' <b>hi</b> "x" ' })).reported, '“<b>hi</b> "x"”');
+
+  // Not a report this tab lists.
+  for (const bad of [null, undefined, 'x', 4, [], {}, { id: 'x', target_type: 'post' }, { id: 'x', target_type: 'user' },
+    { target_type: 'service' }, { id: '', target_type: 'service' }, { id: 'x', target_type: 'constructor' }]) {
+    assert.equal(reportRowText(bad), null, JSON.stringify(bad));
+  }
+});
+
+test('report_reasons_in_words', () => {
+  const reasonOf = (reason) => reportRowText(serviceReport({ reason })).reason;
+  // A service report's reasons are keys; the review and reply sheets send their own words, kept as they are.
+  assert.equal(reasonOf('misleading'), 'Misleading');
+  assert.equal(reasonOf('welfare'), 'Animal welfare concern');
+  assert.equal(reasonOf('scam'), 'Scam or fraud');
+  assert.equal(reasonOf('inappropriate'), 'Inappropriate content');
+  assert.equal(reasonOf('other'), 'Other');
+  assert.equal(reasonOf('Spam or scam'), 'Spam or scam');
+  assert.equal(reasonOf('  Hate speech '), 'Hate speech');
+  assert.equal(reasonOf('Walks eight dogs at once'), 'Walks eight dogs at once');
+  // No reason, or only blanks.
+  for (const none of [null, undefined, '', '  ', 7]) assert.equal(reasonOf(none), 'No reason given', String(none));
+  // Not a label just because every object has the key.
+  assert.equal(reasonOf('constructor'), 'constructor');
+  assert.equal(reasonOf('__proto__'), '__proto__');
+});
+
+test('report_list_parses_the_answer', () => {
+  const a = serviceReport();
+  const b = reviewReport();
+  assert.deepEqual(reportList({ items: [a, b], total: 2 }), { items: [a, b], total: 2 });
+  // More open than were asked for: the total says so.
+  assert.deepEqual(reportList({ items: [a], total: 41 }), { items: [a], total: 41 });
+  assert.deepEqual(reportList({ items: [], total: 0 }), { items: [], total: 0 });
+  // A total that can't be right (below what is here, or not a whole number) is what is here.
+  for (const total of [0, 1, -3, 2.5, '9', null, undefined, NaN]) {
+    assert.equal(reportList({ items: [a, b], total }).total, 2, String(total));
+  }
+  // Entries that can't be shown are left out.
+  assert.deepEqual(reportList({
+    items: [null, a, 'x', [], { id: 'u', target_type: 'user' }, { target_type: 'review' }, { id: '', target_type: 'service' }, b],
+    total: 8,
+  }).items, [a, b]);
+  // An answer that isn't a list of reports.
+  for (const bad of [null, undefined, [], 'x', 4, {}, { items: 'x' }, { items: {} }, { total: 3 }]) {
+    assert.equal(reportList(bad), null, JSON.stringify(bad));
+  }
+});
+
+test('report_from_line_counts_earlier_reports', () => {
+  // The reporter, and how many reports on the same service, review or reply were filed before this one.
+  assert.equal(reportFromLine(serviceReport()), 'From Noor · no earlier reports');
+  assert.equal(reportFromLine(reviewReport()), 'From Bram · 1 earlier report');
+  assert.equal(reportFromLine(replyReport({ earlier_reports: 3 })), 'From Iris · 3 earlier reports');
+  assert.equal(reportFromLine(serviceReport({ reporter: { first_name: null } })), 'From a deleted account · no earlier reports');
+  // A count that isn't a whole number above zero says nothing about earlier reports.
+  for (const bad of [0, -1, 1.5, '2', null, undefined]) {
+    assert.equal(reportFromLine(serviceReport({ earlier_reports: bad })), 'From Noor · no earlier reports', String(bad));
+  }
+  assert.equal(reportFromLine(null), '');
+  assert.equal(reportFromLine({ id: 'x', target_type: 'user' }), '');
+});
+
+test('report_waiting', () => {
+  // 48 h is "2 days": the wording the other tabs use, whole hours up to two days.
+  assert.deepEqual(reportWaiting(serviceReport(), REPORT_NOW),
+    { list: '2 days', card: 'Reported Wed 21 Oct, 14:10 · waiting 2 days' });
+  assert.deepEqual(reportWaiting(reviewReport(), REPORT_NOW),
+    { list: '24 h', card: 'Reported Thu 22 Oct, 14:10 · waiting 24 h' });
+  assert.deepEqual(reportWaiting(replyReport(), REPORT_NOW),
+    { list: '6 h', card: 'Reported Fri 23 Oct, 08:10 · waiting 6 h' });
+  assert.equal(reportWaiting(replyReport({ created_at: '2026-10-23T12:00:00Z' }), REPORT_NOW).list, 'less than an hour');
+  // A time a little ahead (the clocks differ) is not a negative wait.
+  assert.equal(reportWaiting(replyReport({ created_at: '2026-10-23T12:30:00Z' }), REPORT_NOW).list, 'less than an hour');
+  // After the clocks go back (25 Oct) Amsterdam is one hour ahead of UTC.
+  assert.equal(reportWaiting(serviceReport({ created_at: '2026-10-25T23:30:00Z' }), Date.parse('2026-10-26T12:00:00Z')).card,
+    'Reported Mon 26 Oct, 00:30 · waiting 12 h');
+  // Nobody waits on a report that is handled, or whose time isn't one.
+  const handled = { at: '2026-10-22T09:00:00Z', action: 'dismissed', note: 'Asked the pro, fine.' };
+  assert.equal(reportWaiting(serviceReport({ handled }), REPORT_NOW), null);
+  for (const bad of [null, undefined, 'nope', '', 5, {}]) assert.equal(reportWaiting(serviceReport({ created_at: bad }), REPORT_NOW), null, String(bad));
+  assert.equal(reportWaiting(null, REPORT_NOW), null);
+  assert.equal(reportWaiting('x', REPORT_NOW), null);
+});
+
+test('report_actions_per_target', () => {
+  // A service gets dismiss and take down; a review dismiss and hide review; a reply dismiss and hide reply.
+  assert.deepEqual(reportActions(serviceReport()), ['dismiss', 'take_down']);
+  assert.deepEqual(reportActions(reviewReport()), ['dismiss', 'hide_review']);
+  assert.deepEqual(reportActions(replyReport()), ['dismiss', 'hide_reply']);
+  assert.deepEqual(reportActions(serviceReport({ target: { ...serviceReport().target, status: 'paused' } })), ['dismiss', 'take_down']);
+  // A row without the target key says nothing about its state: the target's own list.
+  const { target, ...bare } = serviceReport();
+  assert.deepEqual(reportActions(bare), ['dismiss', 'take_down']);
+
+  // The server refuses an action on a target that is gone or already in that state (not_eligible), so the
+  // page doesn't offer it: only dismiss is left.
+  assert.deepEqual(reportActions(serviceReport({ target: null })), ['dismiss']);
+  assert.deepEqual(reportActions(serviceReport({ target: { ...serviceReport().target, status: 'removed' } })), ['dismiss']);
+  assert.deepEqual(reportActions(serviceReport({ target: { ...serviceReport().target, status: 'draft' } })), ['dismiss']);
+  assert.deepEqual(reportActions(reviewReport({ target: null })), ['dismiss']);
+  assert.deepEqual(reportActions(reviewReport({ target: reviewTarget({ hidden: true }) })), ['dismiss']);
+  assert.deepEqual(reportActions(replyReport({ target: null })), ['dismiss']);
+  assert.deepEqual(reportActions(replyReport({ target: reviewTarget({ reply_hidden: true }) })), ['dismiss']);
+  assert.deepEqual(reportActions(replyReport({ target: reviewTarget({ reply: null, reply_hidden: false }) })), ['dismiss']);
+  // Hiding the review doesn't hide its reply's report from the list, and a hidden review's reply can still be hidden.
+  assert.deepEqual(reportActions(replyReport({ target: reviewTarget({ hidden: true, reply_hidden: false }) })), ['dismiss', 'hide_reply']);
+
+  // Nothing for a report already handled, or one this tab doesn't take.
+  assert.deepEqual(reportActions(serviceReport({ handled: { at: '2026-10-22T09:00:00Z', action: 'dismissed', note: 'x' } })), []);
+  for (const bad of [null, undefined, 'x', {}, { id: 'x', target_type: 'user' }, { id: 'x', target_type: 'post' }]) {
+    assert.deepEqual(reportActions(bad), [], JSON.stringify(bad));
+  }
+});
+
+test('report_target_state_says_why_only_dismiss_is_left', () => {
+  assert.equal(reportTargetState(serviceReport()), null);
+  assert.equal(reportTargetState(reviewReport()), null);
+  assert.equal(reportTargetState(replyReport()), null);
+  const bare = (({ target, ...rest }) => rest)(serviceReport());
+  assert.equal(reportTargetState(bare), null);
+  assert.equal(reportTargetState(serviceReport({ target: { ...serviceReport().target, status: 'paused' } })), null);
+
+  assert.equal(reportTargetState(serviceReport({ target: null })),
+    'This service has been deleted, so the report can only be dismissed.');
+  assert.equal(reportTargetState(serviceReport({ target: { ...serviceReport().target, status: 'removed' } })),
+    'This service is removed already, so the report can only be dismissed.');
+  assert.equal(reportTargetState(serviceReport({ target: { ...serviceReport().target, status: 'draft' } })),
+    'This service is draft, so it can’t be taken down. The report can only be dismissed.');
+  assert.equal(reportTargetState(reviewReport({ target: null })),
+    'This review has been deleted, so the report can only be dismissed.');
+  assert.equal(reportTargetState(reviewReport({ target: reviewTarget({ hidden: true }) })),
+    'This review is hidden already, so the report can only be dismissed.');
+  assert.equal(reportTargetState(replyReport({ target: null })),
+    'This reply has been deleted, so the report can only be dismissed.');
+  assert.equal(reportTargetState(replyReport({ target: reviewTarget({ reply: null, reply_hidden: false }) })),
+    'This review has no reply any more, so the report can only be dismissed.');
+  assert.equal(reportTargetState(replyReport({ target: reviewTarget({ reply_hidden: true }) })),
+    'This reply is hidden already, so the report can only be dismissed.');
+  assert.equal(reportTargetState(serviceReport({ handled: { at: '2026-10-22T09:00:00Z', action: 'dismissed', note: 'x' } })),
+    'This report was handled already.');
+  assert.equal(reportTargetState(null), null);
+
+  // The sentence is there exactly when only Dismiss is left (a handled report has no action at all).
+  const gone = { ...serviceReport().target, status: 'removed' };
+  for (const item of [
+    serviceReport(), bare, serviceReport({ target: null }), serviceReport({ target: gone }),
+    serviceReport({ target: { ...gone, status: 'draft' } }), reviewReport(), reviewReport({ target: null }),
+    reviewReport({ target: reviewTarget({ hidden: true }) }), replyReport(), replyReport({ target: null }),
+    replyReport({ target: reviewTarget({ reply: null }) }), replyReport({ target: reviewTarget({ reply_hidden: true }) }),
+    replyReport({ target: reviewTarget({ hidden: true, reply_hidden: false }) }),
+  ]) {
+    assert.equal(reportTargetState(item) !== null, reportActions(item).length === 1, JSON.stringify(item));
+  }
+});
+
+test('report_action_words', () => {
+  assert.deepEqual(['dismiss', 'take_down', 'hide_review', 'hide_reply'].map(reportActionLabel),
+    ['Dismiss', 'Take the service down', 'Hide review', 'Hide reply']);
+  assert.equal(reportActionLabel('delete'), '');
+  assert.equal(reportActionLabel('constructor'), '');
+
+  // The sentence beside each button is the design's (R11), with the names of this report.
+  assert.equal(reportActionHint(serviceReport(), 'dismiss'), 'Closes the report. The service stays live and nobody is notified.');
+  const paused = serviceReport({ target: { ...serviceReport().target, status: 'paused' } });
+  assert.equal(reportActionHint(paused, 'dismiss'), 'Closes the report. The service stays paused and nobody is notified.');
+  const removed = serviceReport({ target: { ...serviceReport().target, status: 'removed' } });
+  assert.equal(reportActionHint(removed, 'dismiss'), 'Closes the report. Nobody is notified.');
+  assert.equal(reportActionHint(serviceReport({ target: null }), 'dismiss'), 'Closes the report. Nobody is notified.');
+  assert.equal(reportActionHint(reviewReport(), 'dismiss'), 'Nothing changes. Needs the note.');
+  assert.equal(reportActionHint(replyReport(), 'dismiss'), 'Nothing changes. Needs the note.');
+  assert.equal(reportActionHint(serviceReport(), 'take_down'),
+    'Sets it to Removed: pet parents can’t find or book it. Bookings already made go ahead.');
+  assert.equal(reportActionHint(reviewReport(), 'hide_review'),
+    'Gone from the service page and from Bram’s Dog Care’s rating. Iris still sees it, marked hidden. Needs the note.');
+  assert.equal(reportActionHint(reviewReport({ target: reviewTarget({ pro_display_name: null, author_first_name: null }) }), 'hide_review'),
+    'Gone from the service page and from the pro’s rating. Needs the note.');
+  assert.equal(reportActionHint(replyReport(), 'hide_reply'),
+    'Hides only the reply; the review stays. Only on a reply report. Needs the note.');
+  assert.equal(reportActionHint(serviceReport(), 'delete'), '');
+  assert.equal(TAKE_DOWN_NOTIFIED, 'The pro is notified with this reason, in the app and by push.');
+});
+
+test('handle_args_build_the_rpc_call', () => {
+  // Exactly the three arguments of admin_handle_report, the note trimmed.
+  assert.deepEqual(handleArgs(serviceReport(), 'take_down', '  Too many dogs at once.\n'),
+    { p_report_id: 'rep-s1', p_action: 'take_down', p_note: 'Too many dogs at once.' });
+  assert.deepEqual(handleArgs(serviceReport(), 'dismiss', 'Asked the pro; groups are small.'),
+    { p_report_id: 'rep-s1', p_action: 'dismiss', p_note: 'Asked the pro; groups are small.' });
+  assert.deepEqual(handleArgs(reviewReport(), 'hide_review', 'Abuse towards the pro.'),
+    { p_report_id: 'rep-r1', p_action: 'hide_review', p_note: 'Abuse towards the pro.' });
+  assert.deepEqual(handleArgs(replyReport(), 'hide_reply', 'Insults the customer.'),
+    { p_report_id: 'rep-p1', p_action: 'hide_reply', p_note: 'Insults the customer.' });
+  // Whitespace inside is kept; at the ends, the server's own (space, tab, line breaks, form feed, vertical tab) goes.
+  assert.equal(handleArgs(reviewReport(), 'dismiss', '\t\n a\n\nb c \f\v\r\n').p_note, 'a\n\nb c');
+
+  // 5 to 1000 characters once trimmed, counted the way Postgres counts: characters, not UTF-16 units.
+  assert.equal(handleArgs(reviewReport(), 'dismiss', '12345').p_note, '12345');
+  assert.equal(handleArgs(reviewReport(), 'dismiss', '1234'), null);
+  assert.equal(handleArgs(reviewReport(), 'dismiss', '  1234  \n'), null);
+  assert.equal(handleArgs(reviewReport(), 'dismiss', '\n\n\n\n\n\n'), null);
+  assert.equal(handleArgs(reviewReport(), 'dismiss', 'x'.repeat(1000)).p_note.length, 1000);
+  assert.equal(handleArgs(reviewReport(), 'dismiss', 'x'.repeat(1001)), null);
+  assert.equal(handleArgs(reviewReport(), 'dismiss', ` ${'x'.repeat(1000)} `).p_note, 'x'.repeat(1000));
+  assert.equal(handleArgs(reviewReport(), 'dismiss', '🐕'.repeat(5)).p_note, '🐕'.repeat(5)); // 10 UTF-16 units, 5 characters
+  assert.equal(handleArgs(reviewReport(), 'dismiss', '🐕'.repeat(4)), null);
+  assert.equal(handleArgs(reviewReport(), 'dismiss', '🐕'.repeat(1000)).p_note, '🐕'.repeat(1000)); // 2000 units
+  assert.equal(handleArgs(reviewReport(), 'dismiss', '🐕'.repeat(1001)), null);
+  for (const bad of [null, undefined, 12345, {}, ['Too many dogs']]) assert.equal(handleArgs(reviewReport(), 'dismiss', bad), null, String(bad));
+
+  // Only an action this report offers is sent, and only for a report with an id.
+  assert.equal(handleArgs(serviceReport(), 'hide_review', 'A fine note.'), null);
+  assert.equal(handleArgs(serviceReport(), 'hide_reply', 'A fine note.'), null);
+  assert.equal(handleArgs(reviewReport(), 'take_down', 'A fine note.'), null);
+  assert.equal(handleArgs(reviewReport(), 'hide_reply', 'A fine note.'), null);
+  assert.equal(handleArgs(replyReport(), 'hide_review', 'A fine note.'), null);
+  assert.equal(handleArgs(replyReport(), 'take_down', 'A fine note.'), null);
+  assert.equal(handleArgs(serviceReport(), 'delete', 'A fine note.'), null);
+  assert.equal(handleArgs(serviceReport(), undefined, 'A fine note.'), null);
+  assert.equal(handleArgs(serviceReport({ target: { ...serviceReport().target, status: 'removed' } }), 'take_down', 'A fine note.'), null);
+  assert.equal(handleArgs(serviceReport({ id: '' }), 'dismiss', 'A fine note.'), null);
+  assert.equal(handleArgs(serviceReport({ id: undefined }), 'dismiss', 'A fine note.'), null);
+  assert.equal(handleArgs(null, 'dismiss', 'A fine note.'), null);
+});
+
+test('validate_handling_says_what_is_wrong', () => {
+  // A note: the words of every other note on the page.
+  assert.equal(validateHandling(reviewReport(), 'dismiss', 'Looks fine to us.'), null);
+  assert.equal(validateHandling(reviewReport(), 'hide_review', '12345'), null);
+  assert.equal(validateHandling(reviewReport(), 'dismiss', '1234'), validateNote('1234'));
+  assert.equal(validateHandling(reviewReport(), 'dismiss', ''), validateNote(''));
+  assert.equal(validateHandling(reviewReport(), 'dismiss', 'x'.repeat(1001)), validateNote('x'.repeat(1001)));
+  assert.equal(validateHandling(reviewReport(), 'dismiss', null), validateNote(null));
+  // A take-down's text is the reason the pro reads, so it is called that.
+  assert.equal(validateHandling(serviceReport(), 'take_down', 'You walked too many dogs at once.'), null);
+  assert.equal(validateHandling(serviceReport(), 'take_down', '  hi  '),
+    'The reason for the pro is required: write at least 5 characters.');
+  assert.equal(validateHandling(serviceReport(), 'take_down', ''),
+    'The reason for the pro is required: write at least 5 characters.');
+  assert.equal(validateHandling(serviceReport(), 'take_down', 'x'.repeat(1001)),
+    'The reason for the pro can be at most 1000 characters.');
+  assert.equal(validateHandling(serviceReport(), 'take_down', '🐕'.repeat(1000)), null);
+  // An action the report doesn't offer is refused before the note is looked at.
+  const NOT_OFFERED = 'That action isn’t available for this report.';
+  assert.equal(validateHandling(serviceReport(), 'hide_review', 'A fine note.'), NOT_OFFERED);
+  assert.equal(validateHandling(reviewReport(), 'take_down', 'A fine note.'), NOT_OFFERED);
+  assert.equal(validateHandling(reviewReport(), 'take_down', ''), NOT_OFFERED);
+  assert.equal(validateHandling(reviewReport({ target: reviewTarget({ hidden: true }) }), 'hide_review', 'A fine note.'), NOT_OFFERED);
+  assert.equal(validateHandling(null, 'dismiss', 'A fine note.'), NOT_OFFERED);
+});
+
+test('handle_confirm_text_names_what_happens', () => {
+  const reason = 'You walked more dogs at once than your listing allows.';
+  // A take-down: what the pet parents see, who is told and with what, and that other reports go with it.
+  const takeDown = handleConfirmText(serviceReport(), 'take_down', `  ${reason}  `);
+  assert.equal(takeDown,
+    'Take down “Dog walking, 45 min” (Bram’s Dog Care)? It is set to Removed: pet parents can’t find or book it, and bookings already made go ahead. '
+    + `The pro is notified with this reason, in the app and by push: “${reason}” It is saved as the note too. `
+    + 'Every open report on the same service is closed with it.');
+  assert.match(takeDown, /The pro is notified/);
+  assert.ok(takeDown.includes(TAKE_DOWN_NOTIFIED.slice(0, -1) + ':'));
+  assert.match(handleConfirmText(serviceReport({ target: { ...serviceReport().target, pro_display_name: null } }), 'take_down', reason),
+    /^Take down “Dog walking, 45 min”\? /);
+
+  // Dismissing changes nothing and tells nobody.
+  assert.equal(handleConfirmText(serviceReport(), 'dismiss', 'Asked the pro.'),
+    'Dismiss this report about “Dog walking, 45 min”? Nothing changes: the service stays live and nobody is notified. '
+    + 'Every open report on the same service is closed with it, with your note.');
+  assert.equal(handleConfirmText(serviceReport({ target: { ...serviceReport().target, status: 'paused' } }), 'dismiss', 'Asked the pro.'),
+    'Dismiss this report about “Dog walking, 45 min”? Nothing changes: the service stays paused and nobody is notified. '
+    + 'Every open report on the same service is closed with it, with your note.');
+  assert.equal(handleConfirmText(serviceReport({ target: null }), 'dismiss', 'Asked the pro.'),
+    'Dismiss this report about this service? Nothing changes and nobody is notified. '
+    + 'Every open report on the same service is closed with it, with your note.');
+  assert.equal(handleConfirmText(reviewReport(), 'dismiss', 'Asked the pro.'),
+    'Dismiss this report about the review by Iris? Nothing changes and nobody is notified. '
+    + 'Every open report on the same review is closed with it, with your note.');
+  assert.equal(handleConfirmText(replyReport(), 'dismiss', 'Asked the pro.'),
+    'Dismiss this report about Bram’s Dog Care’s reply under Iris’s review? Nothing changes and nobody is notified. '
+    + 'Every open report on the same reply is closed with it, with your note.');
+
+  // Hiding: what disappears, who still sees it, and that nobody is told.
+  assert.equal(handleConfirmText(reviewReport(), 'hide_review', 'Abuse.'),
+    'Hide the review by Iris? It disappears from the service page and from Bram’s Dog Care’s rating. '
+    + 'Iris still sees it, marked hidden. Nobody is notified. Every open report on the same review is closed with it, with your note.');
+  assert.equal(handleConfirmText(reviewReport({ target: reviewTarget({ author_first_name: null, pro_display_name: null }) }), 'hide_review', 'Abuse.'),
+    'Hide the review by a former member? It disappears from the service page and from the pro’s rating. '
+    + 'Nobody is notified. Every open report on the same review is closed with it, with your note.');
+  assert.equal(handleConfirmText(replyReport(), 'hide_reply', 'Insults.'),
+    'Hide Bram’s Dog Care’s reply under Iris’s review? Only the reply is hidden; the review stays. '
+    + 'Nobody is notified. Every open report on the same reply is closed with it, with your note.');
+
+  // Nothing to ask for an action the report doesn't offer.
+  assert.equal(handleConfirmText(reviewReport(), 'take_down', reason), '');
+  assert.equal(handleConfirmText(serviceReport(), 'hide_review', reason), '');
+  assert.equal(handleConfirmText(null, 'dismiss', reason), '');
+});
+
+test('handled_text_is_believed_only_from_the_answer', () => {
+  const handled = (action, over = {}) => ({ at: '2026-10-23T12:00:00+00:00', action, note: 'A fine note.', ...over });
+  const answer = (report, count = 1) => ({ report, handled_count: count });
+
+  // Dismissed.
+  assert.equal(handledText(answer({ ...serviceReport(), handled: handled('dismissed') }), serviceReport(), 'dismiss'),
+    'Report dismissed. Nothing changed.');
+  // Others on the same target were closed with it.
+  assert.equal(handledText(answer({ ...serviceReport(), handled: handled('dismissed') }, 2), serviceReport(), 'dismiss'),
+    'Report dismissed. Nothing changed. 1 other report on the same service was closed with it.');
+  assert.equal(handledText(answer({ ...reviewReport(), handled: handled('dismissed') }, 4), reviewReport(), 'dismiss'),
+    'Report dismissed. Nothing changed. 3 other reports on the same review were closed with it.');
+  assert.equal(handledText(answer({ ...replyReport(), handled: handled('dismissed') }, 2), replyReport(), 'dismiss'),
+    'Report dismissed. Nothing changed. 1 other report on the same reply was closed with it.');
+
+  // Taken down: the answer's target must be Removed.
+  const removed = { ...serviceReport(), target: { ...serviceReport().target, status: 'removed' }, handled: handled('service_removed') };
+  assert.equal(handledText(answer(removed), serviceReport(), 'take_down'), '“Dog walking, 45 min” is taken down: it is now Removed.');
+  assert.equal(handledText(answer(removed, 3), serviceReport(), 'take_down'),
+    '“Dog walking, 45 min” is taken down: it is now Removed. 2 other reports on the same service were closed with it.');
+  assert.equal(handledText(answer({ ...removed, target: { ...removed.target, status: 'live' } }), serviceReport(), 'take_down'), null);
+  assert.equal(handledText(answer({ ...removed, target: null }), serviceReport(), 'take_down'), null);
+
+  // Hidden: the answer's target must say so.
+  const hiddenReview = { ...reviewReport(), target: reviewTarget({ hidden: true }), handled: handled('review_hidden') };
+  assert.equal(handledText(answer(hiddenReview), reviewReport(), 'hide_review'), 'The review by Iris is hidden.');
+  assert.equal(handledText(answer({ ...hiddenReview, target: reviewTarget({ hidden: false }) }), reviewReport(), 'hide_review'), null);
+  const hiddenReply = { ...replyReport(), target: reviewTarget({ reply_hidden: true }), handled: handled('reply_hidden') };
+  assert.equal(handledText(answer(hiddenReply, 2), replyReport(), 'hide_reply'),
+    'Bram’s Dog Care’s reply is hidden. The review stays. 1 other report on the same reply was closed with it.');
+  assert.equal(handledText(answer({ ...hiddenReply, target: reviewTarget({ reply_hidden: false }) }), replyReport(), 'hide_reply'), null);
+
+  // Not believed: another report, another action, no handling, no time, or something that isn't an answer.
+  const ok = answer({ ...serviceReport(), handled: handled('dismissed') });
+  assert.ok(handledText(ok, serviceReport(), 'dismiss'));
+  assert.equal(handledText(answer({ ...serviceReport({ id: 'other' }), handled: handled('dismissed') }), serviceReport(), 'dismiss'), null);
+  assert.equal(handledText(answer({ ...serviceReport(), handled: handled('service_removed') }), serviceReport(), 'dismiss'), null);
+  assert.equal(handledText(answer({ ...serviceReport(), handled: handled('dismissed') }), serviceReport(), 'take_down'), null);
+  assert.equal(handledText(answer({ ...serviceReport(), handled: null }), serviceReport(), 'dismiss'), null);
+  assert.equal(handledText(answer({ ...serviceReport(), handled: handled('dismissed', { at: null }) }), serviceReport(), 'dismiss'), null);
+  assert.equal(handledText(answer({ ...serviceReport(), handled: handled('dismissed', { at: 'nope' }) }), serviceReport(), 'dismiss'), null);
+  assert.equal(handledText(answer(null), serviceReport(), 'dismiss'), null);
+  assert.equal(handledText({}, serviceReport(), 'dismiss'), null);
+  assert.equal(handledText(ok, serviceReport(), 'delete'), null);
+  assert.equal(handledText(ok, null, 'dismiss'), null);
+  for (const bad of [null, undefined, [], 'x', 4]) assert.equal(handledText(bad, serviceReport(), 'dismiss'), null, String(bad));
+  // A count that isn't a whole number above one says nothing about others.
+  for (const count of [null, undefined, 0, -2, 1.5, '3']) {
+    assert.equal(handledText(answer({ ...serviceReport(), handled: handled('dismissed') }, count), serviceReport(), 'dismiss'),
+      'Report dismissed. Nothing changed.', String(count));
+  }
+});
+
+test('handle_errors_in_words', () => {
+  // Not an admin.
+  assert.equal(handleErrorText({ code: '42501', message: 'Admins only' }), 'Couldn’t save: this account isn’t an admin.');
+  assert.equal(handleErrorText({ message: 'Admins only' }), 'Couldn’t save: this account isn’t an admin.');
+  // The state changed under the reviewer (22023 not_eligible): the server's own reason, and the list is reloaded.
+  const handledAlready = { code: '22023', hint: 'not_eligible', message: 'This report was handled already' };
+  assert.equal(handleErrorText(handledAlready),
+    'Couldn’t save: the server refused it (This report was handled already). Someone may have handled this report already, or what it is about has changed. The list was reloaded; check the report before trying again.');
+  assert.equal(handleRefusalIsStale(handledAlready), true);
+  assert.equal(handleRefusalIsStale({ code: '22023', hint: 'not_eligible', message: 'The service is gone, or not live or paused' }), true);
+  assert.equal(handleRefusalIsStale({ message: 'not_eligible' }), true);
+  // A bad note or an unknown report (invalid_input): the reason, and the typed words stay.
+  const badNote = { code: '22023', hint: 'invalid_input', message: 'The note is 5 to 1000 characters' };
+  assert.equal(handleErrorText(badNote), 'Couldn’t save: the server refused it (The note is 5 to 1000 characters).');
+  assert.equal(handleRefusalIsStale(badNote), false);
+  assert.equal(handleErrorText({ hint: 'invalid_input' }), 'Couldn’t save: the server refused it (invalid_input).');
+  // Anything else may or may not have gone through.
+  assert.equal(handleErrorText({ message: 'network error' }), 'Couldn’t save: network error. Refresh the list to see whether it went through.');
+  assert.equal(handleErrorText(null), 'Couldn’t save: unknown error. Refresh the list to see whether it went through.');
+  assert.equal(handleRefusalIsStale({ message: 'network error' }), false);
+  assert.equal(handleRefusalIsStale(null), false);
+  assert.equal(handleRefusalIsStale(undefined), false);
 });

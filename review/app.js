@@ -11,6 +11,9 @@ import {
   reverseConfirmText, reverseLabel, saveErrorText, savedText, sortPros, stateText, strayPaymentNotes,
   strayPayments, stripeTypeNote, suggestedRefund, transferLabel, validateDecision, validateNote,
   verificationBadges, waitedFor, waitingTexts, whenLabel,
+  TAKE_DOWN_NOTIFIED, handleArgs, handleConfirmText, handleErrorText, handleRefusalIsStale, handledText,
+  reportActionHint, reportActionLabel, reportActions, reportFromLine, reportList, reportRowText,
+  reportTargetState, reportWaiting, validateHandling,
 } from '/review/lib.js';
 
 // Applicants choose their avatar URL (the database only checks for https), so
@@ -263,7 +266,7 @@ const REASONS = [
 ];
 const TABS = [
   ['apps', 'Applications'], ['new', 'New services'], ['edits', 'Edits'], ['live', 'Live services'],
-  ['problems', 'Problems'], ['pros', 'Pros'],
+  ['problems', 'Problems'], ['reports', 'Reports'], ['pros', 'Pros'],
 ];
 const SERVICE_REASONS = [
   'Photos are not your own work', 'Price or description is unclear',
@@ -312,6 +315,15 @@ let healthNotice = null;
 // A message above the list that must survive the reload an action triggers.
 let problemNotice = null;
 let keepNotice = false;
+// Reports: the report open below the list (a report id); how many are open in all (the list is cut at
+// REPORTS_LIMIT); what the reviewer has typed per report ({note, reason, error}), kept until that report is
+// handled; and the outcome of the last action, above the list until the tab is loaded again. A report's request
+// is tracked by `requests` too (by its id), so none is sent twice.
+let selectedReport = null;
+let reportTotal = 0;
+let reportNotice = null;
+const reportDrafts = new Map();
+const REPORTS_LIMIT = 200;
 let counts = {}; // tab -> number waiting; unset or null while unknown
 // Tabs whose number is the true count (from the last answer of
 // admin_service_queue_counts). The others come from a list, which stops at 200
@@ -357,7 +369,10 @@ let loadSeq = 0;
 async function load() {
   const seq = ++loadSeq;
   prosLoaded = false;
-  if (!keepNotice) problemNotice = null;
+  if (!keepNotice) {
+    problemNotice = null;
+    reportNotice = null;
+  }
   keepNotice = false;
   healthNotice = null;
   savedCases.clear();
@@ -369,6 +384,7 @@ async function load() {
   if (activeTab === 'apps') await loadApplications(seq);
   else if (activeTab === 'pros') await loadPros(seq);
   else if (activeTab === 'problems') await loadProblems(seq);
+  else if (activeTab === 'reports') await loadReports(seq);
   else await loadServices(seq);
 }
 
@@ -456,6 +472,38 @@ async function loadProblems(seq) {
   renderList();
 }
 
+// The open reports about services, reviews and replies, oldest first (admin_list_reports).
+async function loadReports(seq) {
+  rows = []; // the list must never show another tab's rows
+  reportTotal = 0;
+  let answer;
+  try {
+    answer = await sb.rpc('admin_list_reports', { p_status: 'open', p_limit: REPORTS_LIMIT, p_offset: 0 });
+  } catch (e) {
+    answer = { data: null, error: { message: e?.message ?? 'network error' } };
+  }
+  if (seq !== loadSeq) return; // a newer load() has taken over
+  const { data, error } = answer;
+  const parsed = error ? null : reportList(data);
+  if (!parsed) {
+    counts.reports = null; // unknown, not the old number
+    exact.delete('reports');
+    renderTabs();
+    // Like the pros and the problems: the other tabs work without it, so only this one says so.
+    $('listMsg').textContent = error?.code === 'PGRST202'
+      ? "The reports view isn't set up yet. Apply migrations 117 to 122 from the Zoovo-app/zoovo-app repo, then reload this page."
+      : error ? `Couldn't load reports: ${error.message}` : "Couldn't load reports: the answer isn't a report list.";
+    return;
+  }
+  rows = parsed.items;
+  reportTotal = parsed.total;
+  for (const id of [...reportDrafts.keys()]) if (!rows.some((r) => r.id === id)) reportDrafts.delete(id); // reports that are gone
+  counts.reports = parsed.total; // the true count, not the length of a list that stops at REPORTS_LIMIT
+  exact.add('reports');
+  renderTabs();
+  renderList();
+}
+
 // admin_payment_health: what needs the team but has no case on this tab.
 async function loadHealth(seq) {
   health = { status: 'loading' };
@@ -480,7 +528,25 @@ async function loadHealth(seq) {
 // The counts on the tabs. Each answer is dropped if a newer load() has started
 // (or the reviewer signed out) in the meantime.
 async function loadCounts(seq) {
-  await Promise.all([loadApplicationCount(seq), loadServiceCounts(seq), loadProblemCount(seq)]);
+  await Promise.all([loadApplicationCount(seq), loadServiceCounts(seq), loadProblemCount(seq), loadReportCount(seq)]);
+}
+
+// The open reports, unless the list on screen already says. One row is asked for: the answer has the total.
+async function loadReportCount(seq) {
+  if (activeTab === 'reports') return;
+  let total = null;
+  try {
+    const { data, error } = await sb.rpc('admin_list_reports', { p_status: 'open', p_limit: 1, p_offset: 0 });
+    const parsed = error ? null : reportList(data);
+    if (parsed) total = parsed.total;
+  } catch {
+    // no count for this tab
+  }
+  if (seq !== loadSeq) return;
+  counts.reports = total;
+  if (total === null) exact.delete('reports');
+  else exact.add('reports');
+  renderTabs();
 }
 
 // The open problems, unless the list on screen already says.
@@ -603,6 +669,7 @@ function renderList(keepCard = false) {
   const capped = rows.length >= 200 ? ' (the list stops at 200)' : '';
   if (activeTab === 'pros') return renderPros(capped);
   if (activeTab === 'problems') return renderProblems(capped, keepCard);
+  if (activeTab === 'reports') return renderReports();
   const order = activeTab === 'live' ? 'latest change first' : 'oldest first';
   $('listMsg').textContent = rows.length ? `${rows.length} shown, ${order}${capped}` : 'Nothing here.';
   $('list').replaceChildren(...(activeTab === 'apps' ? rows.map(card) : rows.map((r) => serviceCard(r, activeTab))));
@@ -1532,6 +1599,208 @@ async function finishCaseAction(id, token, meta, { data, error }) {
 }
 
 // ---------------------------------------------------------------------------
+// Reports (R11): reports about services, reviews and the replies under them. A report closes with one of
+// four actions, each with the team's note; the server also closes every other open report on the same target.
+// The names, titles and texts come from users: textContent only, as everywhere else on this page.
+// ---------------------------------------------------------------------------
+
+const REPORTS_INTRO = 'Reports about services, reviews and replies. Every action closes the report and is saved with your note.';
+const REPORTS_FOOTNOTE = 'Review reports show Dismiss and Hide review; reply reports show Dismiss and Hide reply. User, post, message and comment reports stay where they are today.';
+const SAVING = 'Saving… please wait. Don’t close this page.';
+
+const objectOf = (v) => (v !== null && typeof v === 'object' && !Array.isArray(v) ? v : null);
+
+function renderReports() {
+  if (!rows.some((r) => r.id === selectedReport)) selectedReport = rows.length ? rows[0].id : null;
+  const more = reportTotal > rows.length ? ` (the oldest ${rows.length} are shown)` : '';
+  $('listMsg').textContent = rows.length ? `${reportTotal} open, oldest first${more}` : 'No open reports.';
+  const chosen = rows.find((r) => r.id === selectedReport);
+  $('list').replaceChildren(...[
+    el('p', { className: 'muted', textContent: REPORTS_INTRO }),
+    reportNotice ? notice(reportNotice.kind, reportNotice.text) : null,
+    rows.length ? reportsTable() : null,
+    chosen ? reportCard(chosen) : null,
+    rows.length ? el('p', { className: 'muted', textContent: REPORTS_FOOTNOTE }) : null,
+  ].filter(Boolean));
+}
+
+function reportsTable() {
+  const th = (text) => el('th', { scope: 'col', textContent: text });
+  const head = el('thead', {}, el('tr', {},
+    th('Reported by'), th('Reason'), th('What'), th('As reported'), th('Waiting')));
+  return el('div', { className: 'tablewrap' },
+    el('table', { className: 'cases reports' }, head, el('tbody', {}, ...rows.map(reportTableRow))));
+}
+
+function reportTableRow(item) {
+  const text = reportRowText(item);
+  const waiting = reportWaiting(item, Date.now());
+  const selected = item.id === selectedReport;
+  const pick = el('button', { type: 'button', className: 'linkish', textContent: text.by });
+  // The label starts with the visible name, so voice control can say it.
+  pick.setAttribute('aria-label', `${text.by}, open the report: ${text.reason}`);
+  if (selected) pick.setAttribute('aria-current', 'true');
+  // Opening the report that is already open would only redraw its card, and take the caret from a note being typed.
+  pick.onclick = () => { if (item.id === selectedReport) return; selectedReport = item.id; renderList(); };
+  return el('tr', { className: selected ? 'selected' : '' },
+    el('td', {}, pick),
+    el('td', { textContent: text.reason }),
+    el('td', {}, el('span', { className: 'kind', textContent: text.kind }), el('br'), text.what),
+    el('td', {}, text.reported ?? none('No text')),
+    el('td', { className: 'wait', textContent: waiting ? `${waiting.list}${selected ? ' · open below' : ''}` : '—' }));
+}
+
+// The service, review or reply as it is now, next to the report.
+function reportTargetPane(item) {
+  const t = objectOf(item.target);
+  const text = (v) => (typeof v === 'string' && v.trim() ? v.trim() : null);
+  if (item.target_type === 'service') {
+    if (t === null) return pane('THE SERVICE, AS IT IS NOW', none('This service has been deleted.'));
+    return pane('THE SERVICE, AS IT IS NOW',
+      el('span', {}, el('b', { textContent: text(t.title) ?? 'Untitled service' }), text(t.pro_display_name) ? ` · ${text(t.pro_display_name)}` : null),
+      typeof t.status === 'string' ? `Status: ${t.status}` : null);
+  }
+  if (t === null) return pane('THE REVIEW AND ITS REPLY', none(`This ${item.target_type === 'review' ? 'review' : 'reply'} has been deleted.`));
+  const comment = text(t.comment);
+  const reply = text(t.reply);
+  const hidden = (label) => el('span', { className: 'tag warn', textContent: label });
+  return pane('THE REVIEW AND ITS REPLY',
+    el('span', {}, el('b', { textContent: text(t.author_first_name) ?? 'A former member' }), t.hidden === true ? ' ' : null,
+      t.hidden === true ? hidden('review hidden by the team') : null),
+    comment ? el('span', { className: 'quote', textContent: `“${comment}”` }) : none('No comment.'),
+    reply
+      ? el('div', { className: 'box reply' }, el('b', { textContent: `Reply from ${text(t.pro_display_name) ?? 'the pro'}` }),
+        `: “${reply}”`, t.reply_hidden === true ? ' ' : null, t.reply_hidden === true ? hidden('reply hidden by the team') : null)
+      : none('No reply.'));
+}
+
+function reportCard(item) {
+  const id = item.id;
+  const text = reportRowText(item);
+  const waiting = reportWaiting(item, Date.now());
+  const t = objectOf(item.target);
+  const status = item.target_type === 'service' && typeof t?.status === 'string'
+    ? el('span', { className: t.status === 'live' ? 'tag ok' : 'tag warn', textContent: t.status }) : null;
+  const state = reportTargetState(item);
+  const article = el('article', { className: 'card case' },
+    el('div', { className: 'case-head' },
+      el('h2', { textContent: text.heading }),
+      el('div', { className: 'tags' }, el('span', { className: 'tag status', textContent: text.tag }), status),
+      waiting ? el('span', { className: 'waiting', textContent: waiting.card }) : null),
+    state ? notice('warn', state) : null,
+    el('div', { className: 'cols' },
+      reportTargetPane(item),
+      pane('THE REPORT',
+        el('span', {}, el('b', { textContent: `${text.reason}.` })),
+        text.reported ? `As reported: ${text.reported}` : none('No text as reported.'),
+        el('span', { className: 'muted', textContent: reportFromLine(item) }))),
+    reportDecision(item));
+  article.dataset.reportId = id;
+  return article;
+}
+
+// The decision: one note, and an action for each thing the team can do. A take-down has its own box with the
+// reason the pro reads; the server keeps that text as the note too, so the note above is not used for it.
+function reportDecision(item) {
+  const id = item.id;
+  const actions = reportActions(item);
+  if (actions.length === 0) return null;
+  const busy = requests.isBusy(id); // a request for this report is still on its way
+  const draft = reportDrafts.get(id) ?? {}; // what was typed here before the list was drawn again
+  const keep = (part) => reportDrafts.set(id, { ...reportDrafts.get(id), ...part });
+  const formError = el('p', { className: 'error', textContent: draft.error ?? '' });
+  formError.setAttribute('role', 'alert');
+  const saving = el('p', { className: 'muted', textContent: busy ? SAVING : '' });
+  saving.setAttribute('role', 'status');
+
+  const note = el('textarea', { rows: 3, maxLength: 1000, disabled: busy, value: draft.note ?? '' });
+  note.oninput = () => { keep({ note: note.value, error: '' }); formError.textContent = ''; };
+  const reason = el('input', { type: 'text', maxLength: 1000, autocomplete: 'off', disabled: busy, value: draft.reason ?? '' });
+  reason.oninput = () => { keep({ reason: reason.value, error: '' }); formError.textContent = ''; };
+
+  const optionRow = (className, ...children) => el('div', { className: `option ${className}`.trim() }, ...children);
+  const hint = (action) => el('span', { className: 'hint', textContent: reportActionHint(item, action) });
+  const button = (action, className) => {
+    const b = el('button', { type: 'button', className: `btn ${className}`, textContent: reportActionLabel(action), disabled: busy });
+    b.onclick = () => decideReport(item, action, b, action === 'take_down' ? reason : note, formError, saving);
+    return b;
+  };
+
+  const box = el('div', { className: 'actions sep' },
+    el('span', { className: 'decision-title', textContent: 'Decision' }),
+    el('label', {}, 'Note (required, saved with the decision; only the team sees it)', note),
+    actions.includes('take_down')
+      ? el('span', { className: 'muted', textContent: 'For a take-down, the reason for the pro below is saved as the note instead.' }) : null,
+    formError);
+  for (const action of actions) {
+    if (action === 'dismiss') box.append(optionRow('', button(action, 'outline'), hint(action)));
+    else if (action === 'take_down') {
+      box.append(optionRow('suggested', button(action, ''), hint(action),
+        el('label', { className: 'stack' }, 'Reason for the pro (required)', reason),
+        el('span', { className: 'notified wide', textContent: TAKE_DOWN_NOTIFIED })));
+    } else box.append(optionRow('', button(action, 'navy'), hint(action)));
+  }
+  box.append(saving);
+  return box;
+}
+
+// Checks the text, asks, and sends the action once. The card locks first (act), so a second click can't send a
+// second request, and it stays locked until the answer is in. `field` holds the text sent as the note: the note
+// for most actions, the reason for the pro for a take-down.
+function decideReport(item, action, button, field, formError, saving) {
+  const id = item.id;
+  if (requests.isBusy(id)) return;
+  const problem = validateHandling(item, action, field.value);
+  if (problem) {
+    formError.textContent = problem;
+    field.focus();
+    return;
+  }
+  formError.textContent = '';
+  if (!confirm(handleConfirmText(item, action, field.value))) return;
+  const args = handleArgs(item, action, field.value); // validateHandling passed; never send a guess
+  if (!args) {
+    formError.textContent = 'Couldn’t send: this report can’t be handled from here.';
+    return;
+  }
+  const token = requests.start(id);
+  if (token === null) return; // a request for this report is already on its way
+  saving.textContent = SAVING;
+  act('admin_handle_report', args, button, (result) => finishReportAction(item, action, token, result));
+}
+
+// What to do with the answer. An answer that no request is waiting for (the reviewer signed out meanwhile) is
+// ignored. A success is told from what the database answered (handledText), then the list is loaded again; a
+// refusal because the state moved on reloads it too, with the reason above the list; any other refusal
+// stays on the card, unlocked, with the words typed.
+async function finishReportAction(item, action, token, { data, error }) {
+  const id = item.id;
+  if (!requests.finish(id, token)) return;
+  const here = activeTab === 'reports';
+  if (error) {
+    const text = handleErrorText(error);
+    if (!here) {
+      alert(text); // a message for a tab the reviewer has left must not be lost
+      return load();
+    }
+    if (handleRefusalIsStale(error)) {
+      reportNotice = { kind: 'bad', text };
+      keepNotice = true;
+      return load();
+    }
+    reportDrafts.set(id, { ...reportDrafts.get(id), error: text });
+    return renderList();
+  }
+  const said = handledText(data, item, action);
+  if (said) reportDrafts.delete(id);
+  if (!here) return load();
+  reportNotice = said ? { kind: 'ok', text: said }
+    : { kind: 'warn', text: 'The server answered, but not with the report that was sent. The list was reloaded; check it before you do anything else.' };
+  keepNotice = true;
+  return load();
+}
+
+// ---------------------------------------------------------------------------
 // Services. Everything a professional wrote (titles, descriptions, labels,
 // notes, even the media paths) goes in through textContent or an allow-listed
 // URL, never innerHTML.
@@ -1983,6 +2252,10 @@ $('signout').onclick = async () => {
   caseChats.clear();
   chatPainters.clear();
   health = null;
+  selectedReport = null;
+  reportTotal = 0;
+  reportNotice = null;
+  reportDrafts.clear();
   handling.clear();
   payPainters.clear();
   healthNotice = null;
