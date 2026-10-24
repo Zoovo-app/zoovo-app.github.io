@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://zoovo-app.github.io/sitemap.xml
