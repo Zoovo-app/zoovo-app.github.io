@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <!--
+    The base path the web app is served from: `flutter build web` replaces
+    /app/ with its --base-href (scripts/build-web.sh: /app/).
+  -->
+  <base href="/app/">
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval' https://accounts.google.com https://maps.googleapis.com https://cdn.jsdelivr.net https://js.stripe.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://accounts.google.com; font-src 'self' data: https://fonts.gstatic.com; img-src 'self' data: blob: https://bzoaterrltmuqedpikjv.supabase.co https://*.googleusercontent.com https://maps.gstatic.com https://*.googleapis.com https://*.ggpht.com; connect-src 'self' data: blob: https://bzoaterrltmuqedpikjv.supabase.co wss://bzoaterrltmuqedpikjv.supabase.co https://*.googleusercontent.com https://fonts.gstatic.com https://photon.komoot.io https://maps.googleapis.com https://api.stripe.com https://accounts.google.com; frame-src https://accounts.google.com https://js.stripe.com https://hooks.stripe.com; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'self'">
+  <meta content="IE=Edge" http-equiv="X-UA-Compatible">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Find trusted pet care near you: dog walkers, sitters, groomers and more, every service checked by the Zoovo team.">
+  <meta name="theme-color" content="#FDDA3A">
+
+  <!-- iOS meta tags & icons -->
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="Zoovo">
+  <link rel="apple-touch-icon" href="icons/Icon-192.png">
+
+  <link rel="icon" type="image/png" href="favicon.png"/>
+  <title>Zoovo</title>
+  <link rel="manifest" href="manifest.json">
+
+  <!--
+    The Google Maps JavaScript API and the marker clusterer go here when the
+    build is given a Maps key (scripts/build-web.sh). Never commit a key: the
+    build writes it into its own output only. Without one, the map screens
+    show their fallback.
+  -->
+  <!-- zoovo:maps -->
+
+  <style>
+    html, body { margin: 0; height: 100%; background: #FAF8F2; }
+    /* Until the app paints its first frame. */
+    #zoovo-loading {
+      position: fixed; inset: 0; display: flex; align-items: center;
+      justify-content: center;
+    }
+    #zoovo-loading span {
+      width: 36px; height: 36px; border-radius: 50%;
+      border: 3px solid #ECE7DA; border-top-color: #C8401F;
+      animation: zoovo-spin 0.8s linear infinite;
+    }
+    @keyframes zoovo-spin { to { transform: rotate(360deg); } }
+    @media (prefers-reduced-motion: reduce) {
+      #zoovo-loading span { animation: none; }
+    }
+  </style>
+</head>
+<body>
+  <div id="zoovo-loading" aria-label="Loading Zoovo" role="progressbar"><span></span></div>
+  <noscript>Zoovo needs JavaScript to run in your browser.</noscript>
+  <script src="restore-path.js"></script>
+  <script src="flutter_bootstrap.js" async></script>
+</body>
+</html>
