@@ -874,16 +874,16 @@ function refundsTable(items) {
   const th = (text, className = '') => el('th', { scope: 'col', textContent: text, className });
   const head = el('thead', {}, el('tr', {},
     th('When'), th('Amount', 'num'), th('Status'), th('Why'), th('Booking'), th('Pet parent'), th('Pro')));
-  const person = (p) => el('td', {}, el('span', { className: 'name', textContent: p.name }),
+  const person = (p) => el('td', { className: 'person' }, el('span', { className: 'name', textContent: p.name }),
     ...(p.email && p.email !== p.name ? [el('br'), none(p.email)] : []));
   const row = (r) => el('tr', {},
     el('td', { className: 'small', textContent: r.when }),
     el('td', { className: 'num', textContent: r.amount }),
-    el('td', {},
+    el('td', { className: 'status' },
       el('span', { className: REFUND_STATE_CLASS[r.state] ?? 'amber', textContent: r.status }),
-      ...(r.stripeId ? [el('br'), none(r.stripeId)] : [])),
+      ...(r.stripeId ? [el('br'), el('span', { className: 'muted stripe', textContent: r.stripeId })] : [])),
     el('td', {}, r.byTeam ? `${r.reason} (team)` : r.reason, ...(r.note ? [el('br'), none(`“${r.note}”`)] : [])),
-    el('td', {},
+    el('td', { className: 'booking' },
       el('span', { className: 'name', textContent: r.service }), el('br'), none(r.start),
       ...(r.money ? [el('br'), none(r.money)] : []),
       ...(r.cancelled ? [el('br'), none(r.cancelled)] : [])),
