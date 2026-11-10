@@ -14,7 +14,7 @@ import {
   NOT_CONFIRMED, TAKE_DOWN_NOTIFIED, handleCall, handleConfirmText, handleErrorText, handleRefusalIsStale,
   handledText, handlingProblem, reportActionHint, reportActionLabel, reportActions, reportFromLine, reportHidden,
   reportList, reportNoticeShown, reportPlace, reportReasonSentence, reportReviewTitle, reportRowText, reportTargetState,
-  reportWaiting, takeDownPlaceNotice,
+  reportWaiting, takeDownPlaceNotice, refundList,
 } from '/review/lib.js';
 
 // Applicants choose their avatar URL (the database only checks for https), so
@@ -267,7 +267,7 @@ const REASONS = [
 ];
 const TABS = [
   ['apps', 'Applications'], ['new', 'New services'], ['edits', 'Edits'], ['live', 'Live services'],
-  ['problems', 'Problems'], ['reports', 'Reports'], ['pros', 'Pros'],
+  ['problems', 'Problems'], ['reports', 'Reports'], ['refunds', 'Refunds'], ['pros', 'Pros'],
 ];
 const SERVICE_REASONS = [
   'Photos are not your own work', 'Price or description is unclear',
@@ -325,6 +325,10 @@ let reportTotal = 0;
 let reportNotice = null;
 const reportDrafts = new Map();
 const REPORTS_LIMIT = 200;
+// Refunds: every refund, newest first (admin_list_refunds, migration 155), cut at REFUNDS_LIMIT; how many there
+// are in all.
+const REFUNDS_LIMIT = 200;
+let refundTotal = 0;
 let counts = {}; // tab -> number waiting; unset or null while unknown
 // Tabs whose number is the true count (from the last answer of
 // admin_service_queue_counts). The others come from a list, which stops at 200
@@ -386,6 +390,7 @@ async function load() {
   else if (activeTab === 'pros') await loadPros(seq);
   else if (activeTab === 'problems') await loadProblems(seq);
   else if (activeTab === 'reports') await loadReports(seq);
+  else if (activeTab === 'refunds') await loadRefunds(seq);
   else await loadServices(seq);
 }
 
@@ -506,6 +511,32 @@ async function loadReports(seq) {
   counts.reports = parsed.total; // the true count, not the length of a list that stops at REPORTS_LIMIT
   exact.add('reports');
   renderTabs();
+  renderList();
+}
+
+// Every refund, newest first (admin_list_refunds), whatever its reason: a refund the cancellation policy made has no
+// problem case, so this is the one place the team sees it. Read-only.
+async function loadRefunds(seq) {
+  rows = []; // the list must never show another tab's rows
+  refundTotal = 0;
+  let answer;
+  try {
+    answer = await sb.rpc('admin_list_refunds', { p_status: null, p_limit: REFUNDS_LIMIT, p_offset: 0 });
+  } catch (e) {
+    answer = { data: null, error: { message: e?.message ?? 'network error' } };
+  }
+  if (seq !== loadSeq) return; // a newer load() has taken over
+  const { data, error } = answer;
+  const parsed = error ? null : refundList(data);
+  if (!parsed) {
+    // Like the reports: the other tabs work without it, so only this one says so.
+    $('listMsg').textContent = error?.code === 'PGRST202'
+      ? "The refunds list isn't set up yet. Apply migration 155 from the Zoovo-app/zoovo-app repo, then reload this page."
+      : error ? `Couldn't load refunds: ${error.message}` : "Couldn't load refunds: the answer isn't a refund list.";
+    return;
+  }
+  rows = parsed.items;
+  refundTotal = parsed.total;
   renderList();
 }
 
@@ -644,7 +675,7 @@ function renderTabs() {
     b.textContent = typeof n === 'number' ? `${label} · ${n >= 200 && !exact.has(key) ? '200+' : n}` : label;
     b.setAttribute('aria-pressed', String(activeTab === key));
   }
-  document.body.classList.toggle('wide', activeTab === 'pros'); // the table needs the room
+  document.body.classList.toggle('wide', activeTab === 'pros' || activeTab === 'refunds'); // the table needs the room
 }
 
 function renderFilters() {
@@ -675,6 +706,7 @@ function renderList(keepCard = false) {
   if (activeTab === 'pros') return renderPros(capped);
   if (activeTab === 'problems') return renderProblems(capped, keepCard);
   if (activeTab === 'reports') return renderReports();
+  if (activeTab === 'refunds') return renderRefunds();
   const order = activeTab === 'live' ? 'latest change first' : 'oldest first';
   $('listMsg').textContent = rows.length ? `${rows.length} shown, ${order}${capped}` : 'Nothing here.';
   $('list').replaceChildren(...(activeTab === 'apps' ? rows.map(card) : rows.map((r) => serviceCard(r, activeTab))));
@@ -825,6 +857,40 @@ function renderPros(capped) {
       textContent: 'Rate = cancellations by the pro ÷ the pro’s bookings in the last 90 days. Cancellations by customers aren’t counted here. A KvK number opens the company in the KvK register.',
     }),
   ] : []));
+}
+
+// The Refunds tab: one row per refund, newest first. A refund still waiting for Stripe is amber, a failed or
+// canceled one red; what to do about those is on the booking's case (Problems) or at Stripe.
+function renderRefunds() {
+  const n = rows.length;
+  const more = refundTotal > n ? ` of ${refundTotal} (the list stops at ${REFUNDS_LIMIT})` : '';
+  $('listMsg').textContent = n ? `${n}${more} ${n === 1 && !more ? 'refund' : 'refunds'}, newest first` : 'No refunds yet.';
+  $('list').replaceChildren(...(n ? [refundsTable(rows)] : []));
+}
+
+const REFUND_STATE_CLASS = { done: 'good', waiting: 'amber', failed: 'bad' };
+
+function refundsTable(items) {
+  const th = (text, className = '') => el('th', { scope: 'col', textContent: text, className });
+  const head = el('thead', {}, el('tr', {},
+    th('When'), th('Amount', 'num'), th('Status'), th('Why'), th('Booking'), th('Pet parent'), th('Pro')));
+  const person = (p) => el('td', {}, el('span', { className: 'name', textContent: p.name }),
+    ...(p.email && p.email !== p.name ? [el('br'), none(p.email)] : []));
+  const row = (r) => el('tr', {},
+    el('td', { className: 'small', textContent: r.when }),
+    el('td', { className: 'num', textContent: r.amount }),
+    el('td', {},
+      el('span', { className: REFUND_STATE_CLASS[r.state] ?? 'amber', textContent: r.status }),
+      ...(r.stripeId ? [el('br'), none(r.stripeId)] : [])),
+    el('td', {}, r.byTeam ? `${r.reason} (team)` : r.reason, ...(r.note ? [el('br'), none(`“${r.note}”`)] : [])),
+    el('td', {},
+      el('span', { className: 'name', textContent: r.service }), el('br'), none(r.start),
+      ...(r.money ? [el('br'), none(r.money)] : []),
+      ...(r.cancelled ? [el('br'), none(r.cancelled)] : [])),
+    person(r.customer),
+    person(r.pro));
+  return el('div', { className: 'tablewrap' },
+    el('table', { className: 'pros refunds' }, head, el('tbody', {}, ...items.map(row))));
 }
 
 function prosTable(pros) {
