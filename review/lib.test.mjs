@@ -20,7 +20,7 @@ import {
   reportActions, reportTargetState, reportActionLabel, reportActionHint, validateHandling, handleArgs,
   handleConfirmText, handledText, handleErrorText, handleRefusalIsStale, TAKE_DOWN_NOTIFIED, reportFromLine,
   reportHidden, reportNoticeShown, LIST_RELOADED, otherOpenReports, reportReviewTitle, handlingProblem,
-  NOT_CONFIRMED, reportReasonSentence, reportPlace, handleCall, takeDownPlaceNotice,
+  NOT_CONFIRMED, reportReasonSentence, reportPlace, handleCall, takeDownPlaceNotice, refundList,
 } from './lib.js';
 
 // verification as admin_list_pro_applications and admin_list_pros return it:
@@ -2695,4 +2695,49 @@ test('handled_text_for_a_dismissed_lost_pet_or_hazard_report', () => {
   assert.equal(reportHidden(lostReport()).review, false);
   assert.deepEqual(reportHidden(hazardReport({ target: { ...hazardReport().target, hidden: true, reply_hidden: true } })),
     { review: false, reply: false });
+});
+
+test('refundList: a refund list for the Refunds tab, or null', () => {
+  assert.equal(refundList(null), null);
+  assert.equal(refundList({ items: [] }), null);
+  const list = refundList({
+    total: 7,
+    refunds: [
+      {
+        id: 'r1', booking_id: 'b1', amount_cents: 2200, reason: 'policy', status: 'succeeded', by_team: false,
+        stripe_refund_id: 're_1', note: null, created_at: '2026-11-08T13:57:39Z',
+        booking: {
+          service_title: 'Dog walk', start_at: '2026-11-10T09:00:00Z', status: 'cancelled', price_cents: 2200,
+          refunded_cents: 2200, payment_status: 'refunded', cancelled_by: 'customer', cancel_reason: 'plans_changed',
+          cancelled_at: '2026-11-08T13:57:30Z',
+        },
+        customer: { name: 'Cleo Customer', email: 'cleo@example.com' },
+        pro: { display_name: null, email: 'pro@example.com' },
+      },
+      { id: 'r2', amount_cents: 500, reason: 'team', status: 'pending', by_team: true, note: ' Goodwill ', customer: null },
+      { amount_cents: 1 }, 'junk',
+    ],
+  });
+  assert.equal(list.total, 7);
+  assert.equal(list.items.length, 2);
+  const [a, b] = list.items;
+  assert.equal(a.amount, '€22');
+  assert.equal(a.reason, 'Cancellation policy');
+  assert.equal(a.status, 'Refunded');
+  assert.equal(a.state, 'done');
+  assert.equal(a.stripeId, 're_1');
+  assert.equal(a.service, 'Dog walk');
+  assert.equal(a.money, '€22 of €22 back · Refunded');
+  assert.match(a.cancelled, /^Cancelled by the pet parent/);
+  assert.deepEqual(a.customer, { name: 'Cleo Customer', email: 'cleo@example.com' });
+  assert.deepEqual(a.pro, { name: 'pro@example.com', email: 'pro@example.com' });
+  assert.equal(b.state, 'waiting');
+  assert.equal(b.byTeam, true);
+  assert.equal(b.note, 'Goodwill');
+  assert.equal(b.service, '—');
+  assert.equal(b.money, null);
+  assert.equal(b.cancelled, null);
+  assert.deepEqual(b.customer, { name: 'Deleted account', email: null });
+  assert.equal(refundList({ total: 0, refunds: [{ id: 'r3', status: 'failed' }] }).total, 1);
+  assert.equal(refundList({ refunds: [{ id: 'r3', status: 'failed' }] }).items[0].state, 'failed');
 });

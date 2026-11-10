@@ -1873,3 +1873,50 @@ export function createRequestTracker() {
     reset: () => open.clear(),
   };
 }
+
+// ---- Refunds tab ----------------------------------------------------------
+
+// admin_list_refunds (migration 155 of Zoovo-app/zoovo-app) answers {total, refunds: [...]}, newest first:
+// every refund, whatever its reason, so one made by the cancellation policy (with no problem case) is seen too.
+// {items, total} for the page, or null when the answer isn't a refund list. Each item: {id, bookingId, amount,
+// reason, byTeam, status, state: 'done'|'waiting'|'failed', when, note, stripeId, service, start, money,
+// cancelled, customer, pro}; the texts are ready to show, and '—' or a fallback stands in for what is missing.
+export function refundList(data) {
+  if (!isObject(data) || !Array.isArray(data.refunds)) return null;
+  const items = data.refunds.filter((r) => isObject(r) && typeof r.id === 'string').map(refundItem);
+  const total = Number.isSafeInteger(data.total) && data.total >= items.length ? data.total : items.length;
+  return { items, total };
+}
+
+const REFUND_STATE = { succeeded: 'done', requested: 'waiting', pending: 'waiting', failed: 'failed', canceled: 'failed' };
+
+function refundPerson(person, nameKey) {
+  if (!isObject(person)) return { name: 'Deleted account', email: null };
+  const email = trimmed(person.email);
+  return { name: trimmed(person[nameKey]) ?? email ?? 'No name', email };
+}
+
+function refundItem(r) {
+  const b = isObject(r.booking) ? r.booking : {};
+  const price = Number.isFinite(b.price_cents) ? b.price_cents : null;
+  const back = Number.isFinite(b.refunded_cents) ? b.refunded_cents : null;
+  return {
+    id: r.id,
+    bookingId: typeof r.booking_id === 'string' ? r.booking_id : null,
+    amount: formatEuro(r.amount_cents),
+    reason: lookup(REFUND_REASONS, r.reason),
+    byTeam: r.by_team === true,
+    status: lookup(REFUND_STATUSES, r.status),
+    state: typeof r.status === 'string' && Object.hasOwn(REFUND_STATE, r.status) ? REFUND_STATE[r.status] : 'waiting',
+    when: whenLabel(r.created_at),
+    note: trimmed(r.note),
+    stripeId: trimmed(r.stripe_refund_id),
+    service: trimmed(b.service_title) ?? '—',
+    start: whenLabel(b.start_at),
+    money: price === null ? null
+      : `${formatEuro(back ?? 0)} of ${formatEuro(price)} back · ${paymentStatusLabel(b.payment_status)}`,
+    cancelled: cancellationText(b),
+    customer: refundPerson(r.customer, 'name'),
+    pro: refundPerson(r.pro, 'display_name'),
+  };
+}
